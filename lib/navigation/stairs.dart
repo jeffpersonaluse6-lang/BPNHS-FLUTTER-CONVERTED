@@ -59,11 +59,16 @@ List<StairSection> transitions(MapItem item, int floor, int count) {
 /// Returns (progress, lateral, raw).
 /// Matches Python section_progress from navigation/stairs.py.
 (List<double>, bool, double) sectionProgress(
-    StairSection section, double px, double py) {
+  StairSection section,
+  double px,
+  double py,
+) {
   final local = section.worldToLocal(px, py);
-  final raw = section.direction == 'up'
+
+  var raw = section.direction == 'up'
       ? (section.height - local[1]) / section.height
       : local[1] / section.height;
+
   final progress = raw.clamp(0.0, 1.0);
   final lateral = local[0] >= -1e-7 && local[0] <= section.width + 1e-7;
   return ([progress], lateral, raw);

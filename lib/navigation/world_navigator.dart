@@ -7,6 +7,7 @@ import 'stairs.dart';
 import 'floor_transform.dart';
 import 'runtime_index.dart';
 import 'same_floor_pathfinder.dart';
+import 'hazard.dart';
 
 const String campus = 'Campus';
 const double transitionThreshold = 0.05;
@@ -77,6 +78,10 @@ class WorldNavigator {
   int? waitFloor;
   final Set<String> lockedSections = {};
 
+  // Simulation hazards are runtime-only. They do not modify the saved map.
+  final List<HazardZone> hazards = <HazardZone>[];
+  int _nextHazardId = 1;
+
   final Map<String, List<MapItem>> _stairObjects = {};
   final Map<String, RuntimeIndex<StairSection>> _stairIndices = {};
   final Map<String, List<PolygonBarrier>> _roofAreas = {};
@@ -107,6 +112,93 @@ class WorldNavigator {
     this.stairSpeedMultiplier = 0.65,
   }) {
     _buildIndex();
+  }
+
+  HazardZone addFireHazard(double x, double y, {double radius = 55}) {
+    final zone = HazardZone(
+      id: 'fire_${_nextHazardId++}',
+      kind: HazardKind.fire,
+      x: x,
+      y: y,
+      radius: radius,
+      buildingId: parent?.id,
+      floor: parent == null ? 1 : currentFloor,
+    );
+    hazards.add(zone);
+    return zone;
+  }
+
+  void clearHazards() {
+    hazards.clear();
+  }
+
+  bool resizeHazard(String id, double radius) {
+    for (final hazard in hazards) {
+      if (hazard.id != id) continue;
+      hazard.radius = radius.clamp(20.0, 160.0).toDouble();
+      return true;
+    }
+    return false;
+  }
+
+  List<HazardZone> get visibleHazards {
+    final activeBuilding = parent?.id;
+    final activeFloor = parent == null ? 1 : currentFloor;
+    return hazards
+        .where((h) => h.matchesSurface(activeBuilding, activeFloor))
+        .toList(growable: false);
+  }
+
+  List<Barrier> _hazardBarriersForSurface(String? buildingId, int floor) {
+    return <Barrier>[
+      for (final hazard in hazards)
+        if (hazard.matchesSurface(buildingId, floor))
+          ...hazard.routingBarriers(),
+    ];
+  }
+
+  bool _pathClearOfSurfaceHazards(
+    List<List<double>> path,
+    String? buildingId,
+    int floor,
+  ) {
+    if (path.length < 2) return true;
+
+    final hazardBarriers = _hazardBarriersForSurface(buildingId, floor);
+    if (hazardBarriers.isEmpty) return true;
+
+    final checker = SameFloorPathfinder(
+      barriers: hazardBarriers,
+      playerRadius: collisionRadius,
+      width: scene.width,
+      height: scene.height,
+    );
+
+    for (var i = 1; i < path.length; i++) {
+      if (!checker.lineIsWalkable(path[i - 1], path[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  List<Barrier> _groundRoutingBarriers() {
+    return <Barrier>[
+      ...groundBarriers,
+      // Floor-1 routes can pass from a building into campus, so include every
+      // Floor-1 fire zone. Spatial position still determines whether it matters.
+      for (final hazard in hazards)
+        if (hazard.floor == 1) ...hazard.routingBarriers(),
+    ];
+  }
+
+  List<Barrier> _currentSurfaceRoutingBarriers(List<Barrier> base) {
+    if (currentFloor == 1) return _groundRoutingBarriers();
+
+    return <Barrier>[
+      ...base,
+      ..._hazardBarriersForSurface(parent?.id, currentFloor),
+    ];
   }
 
   void _buildIndex() {
@@ -274,32 +366,126 @@ class WorldNavigator {
   ///
   /// Stairs/multi-floor routing are deliberately deferred to the next stage.
   /// During an active stair transition this returns no route.
+  List<Barrier> _floorOneHazardBarriers() {
+    return <Barrier>[
+      for (final hazard in hazards)
+        if (hazard.floor == 1) ...hazard.routingBarriers(),
+    ];
+  }
+
+  List<List<double>> _findCampusRoadRouteWithHazards(
+    List<double> start,
+    List<double> goal,
+  ) {
+    // First calculate the clean road route exactly as before fire simulation.
+    // This preserves centerlines, T-junctions, and short road access legs.
+    final baselinePathfinder = SameFloorPathfinder(
+      barriers: groundBarriers,
+      playerRadius: collisionRadius,
+      width: scene.width,
+      height: scene.height,
+      preferredAreas: campusPreferredAreas,
+    );
+    final baseline = baselinePathfinder.findPath(start, goal);
+    if (baseline.isEmpty) return const <List<double>>[];
+
+    final fireBarriers = _floorOneHazardBarriers();
+    if (fireBarriers.isEmpty) return baseline;
+
+    final hazardAwareBarriers = <Barrier>[...groundBarriers, ...fireBarriers];
+
+    // This pathfinder is intentionally NOT road-preferred. It is used only for
+    // a single blocked baseline segment, so its job is a small local detour
+    // around the fire before immediately rejoining the road.
+    final localDetourPathfinder = SameFloorPathfinder(
+      barriers: hazardAwareBarriers,
+      playerRadius: collisionRadius,
+      width: scene.width,
+      height: scene.height,
+    );
+
+    final result = <List<double>>[List<double>.from(baseline.first)];
+
+    for (var i = 1; i < baseline.length; i++) {
+      final a = result.last;
+      final b = baseline[i];
+
+      if (localDetourPathfinder.lineIsWalkable(a, b)) {
+        result.add(List<double>.from(b));
+        continue;
+      }
+
+      final detour = localDetourPathfinder.findPath(a, b);
+      if (detour.isEmpty) {
+        // Unusual geometry: use the fully hazard-aware pathfinder as a safe
+        // fallback rather than drawing through the fire.
+        final fallback = SameFloorPathfinder(
+          barriers: hazardAwareBarriers,
+          playerRadius: collisionRadius,
+          width: scene.width,
+          height: scene.height,
+          preferredAreas: campusPreferredAreas,
+        ).findPath(start, goal);
+        return fallback;
+      }
+
+      for (var j = 1; j < detour.length; j++) {
+        final point = detour[j];
+        final prev = result.last;
+        if (hypot(point[0] - prev[0], point[1] - prev[1]) > 1e-6) {
+          result.add(List<double>.from(point));
+        }
+      }
+    }
+
+    // Final safety check: every displayed blue segment must respect fire and
+    // real collision geometry.
+    for (var i = 1; i < result.length; i++) {
+      if (!localDetourPathfinder.lineIsWalkable(result[i - 1], result[i])) {
+        return SameFloorPathfinder(
+          barriers: hazardAwareBarriers,
+          playerRadius: collisionRadius,
+          width: scene.width,
+          height: scene.height,
+          preferredAreas: campusPreferredAreas,
+        ).findPath(start, goal);
+      }
+    }
+
+    return result;
+  }
+
   List<List<double>> findSameFloorRoute(double targetX, double targetY) {
     if (transition != null) return const <List<double>>[];
 
+    // Campus uses the normal centered road route with only LOCAL fire detours.
+    if (parent == null) {
+      return _findCampusRoadRouteWithHazards(
+        <double>[markerX, markerY],
+        <double>[targetX, targetY],
+      );
+    }
+
     final List<Barrier> barriers;
-    if (parent == null || currentFloor == 1) {
-      // This exactly matches the collision source used by _allowed() on Campus
-      // and Floor 1, including campus barriers and every projected Floor 1
-      // barrier.
+    if (currentFloor == 1) {
       barriers = groundBarriers;
     } else {
       final key = '${parent!.id}:$currentFloor';
       barriers = _colliders[key]?.$1 ?? const <Barrier>[];
     }
 
+    // Indoor routing has no road-centerline network. Keep the normal A* route,
+    // but include fire on the active floor so stairs/rooms can be avoided.
     final pathfinder = SameFloorPathfinder(
-      barriers: barriers,
+      barriers: _currentSurfaceRoutingBarriers(barriers),
       playerRadius: collisionRadius,
       width: scene.width,
       height: scene.height,
-      // Manual/current-surface campus routing prefers the mapped roads.
-      // Indoor same-floor routing stays unchanged.
-      preferredAreas: parent == null
-          ? campusPreferredAreas
-          : const <PolygonBarrier>[],
     );
-    return pathfinder.findPath([markerX, markerY], [targetX, targetY]);
+    return pathfinder.findPath(
+      <double>[markerX, markerY],
+      <double>[targetX, targetY],
+    );
   }
 
   /// Stage 3: choose a reachable staircase on the current floor that moves the
@@ -334,7 +520,7 @@ class WorldNavigator {
     }
 
     final pathfinder = SameFloorPathfinder(
-      barriers: barriers,
+      barriers: _currentSurfaceRoutingBarriers(barriers),
       playerRadius: collisionRadius,
       width: scene.width,
       height: scene.height,
@@ -346,6 +532,14 @@ class WorldNavigator {
     for (final section in eligible) {
       for (final stairLane in _stairLaneRoutes(building, section)) {
         if (stairLane.length < 2) continue;
+
+        // The approach A* already avoids fire, but the staircase lane used to
+        // be appended afterward without any hazard check. Reject this entire
+        // stair option when fire overlaps the stair lane so another staircase
+        // can be chosen.
+        if (!_pathClearOfSurfaceHazards(stairLane, building.id, currentFloor)) {
+          continue;
+        }
 
         // A* only needs to reach the source-side entrance of the staircase.
         // From there, append the staircase lane itself. This prevents the blue
@@ -414,9 +608,9 @@ class WorldNavigator {
   ) {
     final transform =
         _transforms[building.id] ?? FloorTransform.build(building);
-    final localY = section.direction == 'up'
-        ? section.height * (1 - raw)
-        : section.height * raw;
+
+    var longitudinal = section.direction == 'up' ? 1.0 - raw : raw;
+    final localY = section.height * longitudinal;
     final local = section.stair.localToWorld(
       section.width * laneFactor,
       localY,
@@ -424,27 +618,29 @@ class WorldNavigator {
     return transform.project(local[0], local[1]);
   }
 
+  double _stairLaneFactor(StairSection section) {
+    // The rendered stair has a center railing. Alternate only the LEFT/RIGHT
+    // half on adjacent source floors. Do NOT reverse longitudinal progress here:
+    // section.direction already defines the correct UP/DOWN travel direction.
+    return section.source.isEven ? 0.72 : 0.28;
+  }
+
   List<List<List<double>>> _stairLaneRoutes(
     MapItem building,
     StairSection section,
   ) {
-    final preferredLane = section.direction == 'down' ? 0.78 : 0.22;
-    final laneFactors = section.direction == 'down'
-        ? <double>[preferredLane, 0.72, 0.84]
-        : <double>[preferredLane, 0.28, 0.16];
+    final lane = _stairLaneFactor(section);
     final completion = _stairCompletionRaw();
 
-    // Start just inside the source side so the existing stair activator can
-    // arm normally, then follow the stair longitudinally to the transition
-    // completion level. These are progress levels, not fixed map coordinates.
+    // One deterministic flight per floor. Adjacent floors alternate both
+    // longitudinal direction and left/right half of the same stairwell.
     final rawLevels = <double>[0.035, 0.25, 0.50, 0.75, completion];
 
     return [
-      for (final lane in laneFactors)
-        [
-          for (final raw in rawLevels)
-            _stairWorldPoint(building, section, raw, lane),
-        ],
+      [
+        for (final raw in rawLevels)
+          _stairWorldPoint(building, section, raw, lane),
+      ],
     ];
   }
 
@@ -498,84 +694,123 @@ class WorldNavigator {
   /// starting the next floor leg. This prevents immediately re-entering the
   /// same stair from its target side and accidentally going back up a floor.
   List<List<double>> completedStairTurnaroundGuide() {
-    final section = lastCompletedStair;
+    final completed = lastCompletedStair;
     final building = parent;
-    if (section == null || building == null) {
+    if (completed == null || building == null) {
       return const <List<double>>[];
     }
 
-    final preferredRight = section.direction == 'down';
-    final clearance = math.max(14.0, collisionRadius + 8.0);
-    final sourceRaw = -math.max(
-      0.10,
-      clearance / math.max(1.0, section.height),
+    final transform =
+        _transforms[building.id] ?? FloorTransform.build(building);
+
+    final floorLocal = transform.unproject(markerX, markerY);
+    final stairLocal = completed.stair.worldToLocal(
+      floorLocal[0],
+      floorLocal[1],
     );
-    final targetRaw =
-        1.0 + math.max(0.10, clearance / math.max(1.0, section.height));
-    final lane = section.direction == 'down' ? 0.78 : 0.22;
 
-    List<List<double>> buildGuide(bool rightSide) {
-      final outsideX = rightSide ? section.width + clearance : -clearance;
-      final sourceY = section.direction == 'up'
-          ? section.height * (1 - sourceRaw)
-          : section.height * sourceRaw;
-      final targetY = section.direction == 'up'
-          ? section.height * (1 - targetRaw)
-          : section.height * targetRaw;
-      final sourceLaneX = section.width * lane;
-      final targetLaneX = section.width * lane;
+    final currentLane = completed.width <= 1e-9
+        ? _stairLaneFactor(completed)
+        : (stairLocal[0] / completed.width).clamp(0.12, 0.88).toDouble();
 
-      final transform =
-          _transforms[building.id] ?? FloorTransform.build(building);
+    // Find the next section in the SAME physical stairwell and continuing in
+    // the same vertical direction. We only need it to know which half of the
+    // landing to cross toward.
+    final goingDown = completed.target < completed.source;
+    final candidates =
+        _connections['${building.id}:$currentFloor'] ?? const <StairSection>[];
 
-      List<double> project(double x, double y) {
-        final local = section.stair.localToWorld(x, y);
-        return transform.project(local[0], local[1]);
+    StairSection? nextSameWell;
+    var bestDistance = double.infinity;
+
+    final completedCenter = completed.stair.localToWorld(
+      completed.width / 2,
+      completed.height / 2,
+    );
+
+    for (final candidate in candidates) {
+      final sameDirection = goingDown
+          ? candidate.target < candidate.source
+          : candidate.target > candidate.source;
+      if (!sameDirection) continue;
+
+      final center = candidate.stair.localToWorld(
+        candidate.width / 2,
+        candidate.height / 2,
+      );
+      final distance = hypot(
+        center[0] - completedCenter[0],
+        center[1] - completedCenter[1],
+      );
+
+      final sameWellTolerance = math.max(
+        40.0,
+        math.max(
+              math.max(completed.width, completed.height),
+              math.max(candidate.width, candidate.height),
+            ) *
+            0.65,
+      );
+
+      if (distance > sameWellTolerance || distance >= bestDistance) continue;
+
+      // If this next flight is covered by fire, do NOT lead the player across
+      // the landing toward it. Exit straight and let the next route choose a
+      // different staircase.
+      final lanePath = _stairLaneRoutes(building, candidate).first;
+      if (!_pathClearOfSurfaceHazards(lanePath, building.id, currentFloor)) {
+        continue;
       }
 
-      return <List<double>>[
-        [markerX, markerY],
-        project(targetLaneX, targetY),
-        project(outsideX, targetY),
-        project(outsideX, sourceY),
-        project(sourceLaneX, sourceY),
-      ];
+      bestDistance = distance;
+      nextSameWell = candidate;
     }
 
-    bool safe(List<List<double>> guide) {
-      // The first point is the live player position. Check only future guide
-      // points; route segments are intentionally outside the stair activator.
-      for (var i = 1; i < guide.length; i++) {
-        if (!allowed(guide[i])) return false;
-      }
-      return true;
+    final nextLane = nextSameWell == null
+        ? currentLane
+        : _stairLaneFactor(nextSameWell);
+
+    final clearance = math.max(14.0, collisionRadius + 8.0);
+    final outsideRaw =
+        1.0 + math.max(0.10, clearance / math.max(1.0, completed.height));
+
+    final current = <double>[markerX, markerY];
+
+    // First continue OUT of the completed flight at the same lane.
+    final outsideCurrentLane = _stairWorldPoint(
+      building,
+      completed,
+      outsideRaw,
+      currentLane,
+    );
+
+    // Then cross the landing OUTSIDE the center railing to the half used by the
+    // next floor. This is the small green-style U/crossover the user expects.
+    final outsideNextLane = _stairWorldPoint(
+      building,
+      completed,
+      outsideRaw,
+      nextLane,
+    );
+
+    final guide = <List<double>>[current, outsideCurrentLane];
+
+    if (hypot(
+          outsideNextLane[0] - outsideCurrentLane[0],
+          outsideNextLane[1] - outsideCurrentLane[1],
+        ) >
+        1.0) {
+      guide.add(outsideNextLane);
     }
 
-    final preferred = buildGuide(preferredRight);
-    if (safe(preferred)) return preferred;
-
-    final alternate = buildGuide(!preferredRight);
-    if (safe(alternate)) return alternate;
-
-    // If nearby walls make both full bypasses fail the generic collision test,
-    // still prefer the direction matching the stair lane. The player movement
-    // system remains authoritative and will prevent crossing real barriers.
-    return preferred;
+    return guide;
   }
 
   bool completedStairTurnaroundReached() {
-    final section = lastCompletedStair;
-    final building = parent;
-    if (section == null || building == null) return true;
-
-    final transform =
-        _transforms[building.id] ?? FloorTransform.build(building);
-    final floorLocal = transform.unproject(markerX, markerY);
-    final raw = sectionProgress(section, floorLocal[0], floorLocal[1]).$3;
-
-    // We are safely beyond the source side of the old activator. At this point
-    // the next stair leg can start from raw ~= 0 in the correct direction.
-    return raw <= -0.08 && exitAreas.isEmpty;
+    // _rearmAfterExit() clears exitAreas only after the player has physically
+    // left the completed stair footprint. At that point the next alternating
+    // flight may safely arm.
+    return exitAreas.isEmpty;
   }
 
   double _routeLength(List<List<double>> path) {
@@ -641,59 +876,28 @@ class WorldNavigator {
     final target = campusGateApproach(kind);
     if (building == null || target == null || currentFloor <= 1) return null;
 
-    final pathfinder = SameFloorPathfinder(
-      barriers: groundBarriers,
-      playerRadius: collisionRadius,
-      width: scene.width,
-      height: scene.height,
-      preferredAreas: campusPreferredAreas,
+    // IMPORTANT: do not run campus A* here.
+    //
+    // This method is called for BOTH official gates when Main/Alternative is
+    // pressed on an upper floor. The old implementation sampled many exterior
+    // anchors and ran road A* for every sample, blocking Flutter's UI thread for
+    // several seconds.
+    //
+    // On upper floors, stair descent is shared by both gate choices. A cheap
+    // world-space estimate is enough to rank the gates. Once Floor 1 is reached,
+    // the real collision-safe, road-aware route remains authoritative.
+    final directCampusEstimate = hypot(
+      target[0] - markerX,
+      target[1] - markerY,
     );
 
-    final clearance = math.max(30.0, collisionRadius + 18.0);
-    final w = building.width;
-    final h = building.height;
+    final floorPenalty = math.max(0, currentFloor - 1) * 150.0;
 
-    // Sample outside points around the building. This estimates the campus leg
-    // without mutating the live floor/stair state.
-    final localCandidates = <List<double>>[
-      [-clearance, h / 2],
-      [w + clearance, h / 2],
-      [w / 2, -clearance],
-      [w / 2, h + clearance],
-      [-clearance, -clearance],
-      [w + clearance, -clearance],
-      [w + clearance, h + clearance],
-      [-clearance, h + clearance],
-    ];
+    // Small building egress allowance keeps this comparable with the previous
+    // score without performing any path search.
+    final egressAllowance = math.min(building.width, building.height) * 0.25;
 
-    var best = double.infinity;
-    for (final local in localCandidates) {
-      final anchor = building.localToWorld(local[0], local[1]);
-      if (anchor[0] < collisionRadius ||
-          anchor[0] > scene.width - collisionRadius ||
-          anchor[1] < collisionRadius ||
-          anchor[1] > scene.height - collisionRadius) {
-        continue;
-      }
-
-      final campusRoute = pathfinder.findPath(anchor, target);
-      if (campusRoute.isEmpty) continue;
-
-      // Indoor distance to the eventual building edge is only an estimate here.
-      // The real Stage 3/4 route remains authoritative during navigation.
-      final indoorEstimate = hypot(markerX - anchor[0], markerY - anchor[1]);
-      final floorPenalty = math.max(0, currentFloor - 1) * 150.0;
-      final score = indoorEstimate + floorPenalty + _routeLength(campusRoute);
-      if (score < best) best = score;
-    }
-
-    if (best.isFinite) return best;
-
-    // Conservative fallback for unusual footprints where every sampled egress
-    // point lands inside geometry. The route will still be validated for real
-    // after reaching Floor 1.
-    return hypot(target[0] - markerX, target[1] - markerY) +
-        math.max(0, currentFloor - 1) * 150.0;
+    return directCampusEstimate + floorPenalty + egressAllowance;
   }
 
   /// Stage 5: find a configured campus evacuation gate.
@@ -764,14 +968,10 @@ class WorldNavigator {
       return const <List<double>>[];
     }
 
-    final pathfinder = SameFloorPathfinder(
-      barriers: groundBarriers,
-      playerRadius: collisionRadius,
-      width: scene.width,
-      height: scene.height,
-      preferredAreas: campusPreferredAreas,
+    return _findCampusRoadRouteWithHazards(
+      <double>[markerX, markerY],
+      <double>[targetX, targetY],
     );
-    return pathfinder.findPath([markerX, markerY], [targetX, targetY]);
   }
 
   RuntimeIndex<StairSection> _buildStairIndex(
@@ -1024,8 +1224,9 @@ class WorldNavigator {
       if (px < box.$1 - radius ||
           px > box.$3 + radius ||
           py < box.$2 - radius ||
-          py > box.$4 + radius)
+          py > box.$4 + radius) {
         continue;
+      }
       final index = _collisionIndices[key];
       if (index != null) {
         final nearby = index.query(px, py, padding: radius);

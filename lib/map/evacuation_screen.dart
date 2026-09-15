@@ -29,6 +29,15 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   bool moveMode = false;
   bool followActive = false;
 
+  // Mobile invisible joystick: finger-down point is its center.
+  Offset? _mobileMoveOrigin;
+  static const double _mobileMoveRadius = 72;
+
+  // Fire simulation placement mode. Hazards are runtime-only.
+  bool _firePlacementMode = false;
+  double _fireRadius = 55;
+  String? _selectedFireHazardId;
+
   // Stage 2 route visualization. This stays same-floor only until stair routing
   // is added in a later stage.
   List<List<double>> routePoints = const [];
@@ -43,6 +52,18 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   String? _evacuationGateKind;
   String? _evacuationRouteRole;
   double _routeRefreshElapsed = 0;
+
+  // Route presentation UX. Calculations stay synchronous for now, but the map
+  // hides the unfinished route behind a short loading state, then reveals the
+  // completed polyline progressively from the player's position.
+  bool _routeCalculating = false;
+  double _routeCalculationHold = 0;
+  bool _routeRevealAnimating = false;
+  double _routeRevealProgress = 1;
+  String _routeCalculationLabel = 'Calculating evacuation path…';
+
+  static const double _routeLoadingMinSeconds = 0.22;
+  static const double _routeRevealSeconds = 0.70;
 
   static const double joystickBaseSize = 148;
   static const double joystickKnobSize = 56;
@@ -68,6 +89,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   }
 
   void _tick(double dt) {
+    final routePresentationChanged = _updateRoutePresentation(dt);
+
     if (moveMode && (joystickX != 0 || joystickY != 0)) {
       final before = [navigator.markerX, navigator.markerY];
       final result = navigator.walk(
@@ -96,13 +119,118 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         moving: false,
         diameter: playerSize,
       );
-      if (changed) setState(() {});
+      if (changed || routePresentationChanged) setState(() {});
       final screen = camera.screen([navigator.markerX, navigator.markerY]);
       if (hypot(screen[0] - camera.width / 2, screen[1] - camera.height / 2) <
           0.05) {
         followActive = false;
       }
+    } else if (routePresentationChanged) {
+      // Route loading/reveal must animate even while the player is stationary.
+      setState(() {});
     }
+  }
+
+  void _beginRoutePresentation([String? label]) {
+    _routeCalculating = true;
+    _routeCalculationHold = 0;
+    _routeRevealAnimating = false;
+    _routeRevealProgress = 0;
+    if (label != null) _routeCalculationLabel = label;
+  }
+
+  bool _updateRoutePresentation(double dt) {
+    if (_routeCalculating) {
+      _routeCalculationHold += dt;
+      if (_routeCalculationHold >= _routeLoadingMinSeconds) {
+        _routeCalculating = false;
+        _routeCalculationHold = 0;
+
+        if (routePoints.length >= 2) {
+          _routeRevealAnimating = true;
+          _routeRevealProgress = 0;
+        } else {
+          _routeRevealAnimating = false;
+          _routeRevealProgress = 1;
+        }
+      }
+      return true;
+    }
+
+    if (_routeRevealAnimating) {
+      _routeRevealProgress = (_routeRevealProgress + dt / _routeRevealSeconds)
+          .clamp(0.0, 1.0);
+      if (_routeRevealProgress >= 1) {
+        _routeRevealProgress = 1;
+        _routeRevealAnimating = false;
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  Widget _buildRouteLoadingOverlay() {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Center(
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 320),
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+            decoration: BoxDecoration(
+              color: const Color(0xF2FFFFFF),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFD8E2EC)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x24000000),
+                  blurRadius: 18,
+                  offset: Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    color: Color(0xFF2563EB),
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Flexible(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _routeCalculationLabel,
+                        style: const TextStyle(
+                          color: Color(0xFF183B56),
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      const Text(
+                        'Finding the safest available path…',
+                        style: TextStyle(
+                          color: Color(0xFF5E7184),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -113,6 +241,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isMobile = MediaQuery.sizeOf(context).width < 700;
+
     String status =
         'Walking on campus. Walk through a building doorway to enter.';
     String subtitle = 'Campus overview';
@@ -133,15 +263,15 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       backgroundColor: const Color(0xFFF5F7FB),
       body: Column(
         children: [
-          _buildHeader(),
-          _buildActionBar(subtitle, status),
+          if (!isMobile) _buildHeader(),
+          if (!isMobile) _buildActionBar(subtitle, status),
           Expanded(
             child: Stack(
               children: [
                 Padding(
-                  padding: const EdgeInsets.all(16),
+                  padding: EdgeInsets.all(isMobile ? 0 : 16),
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(isMobile ? 0 : 12),
                     child: Container(
                       color: const Color(0xFFD5DEE8),
                       child: LayoutBuilder(
@@ -149,9 +279,12 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                           camera.width = constraints.maxWidth;
                           camera.height = constraints.maxHeight;
                           return GestureDetector(
-                            onTapUp: _onMapTap,
+                            onTapUp: _firePlacementMode
+                                ? _onFireTap
+                                : _onMapTap,
                             onScaleStart: _onScaleStart,
                             onScaleUpdate: _onScaleUpdate,
+                            onScaleEnd: _onScaleEnd,
                             child: CustomPaint(
                               painter: MapPainter(
                                 scene: widget.scene,
@@ -166,7 +299,10 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                                 ],
                                 playerSize: playerSize,
                                 collisionRadius: collisionRadius,
-                                routePoints: routePoints,
+                                routePoints: _routeCalculating
+                                    ? const <List<double>>[]
+                                    : routePoints,
+                                routeRevealProgress: _routeRevealProgress,
                               ),
                               size: Size.infinite,
                             ),
@@ -176,211 +312,536 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                     ),
                   ),
                 ),
-                if (moveMode)
+                if (moveMode && !isMobile)
                   Positioned(right: 30, bottom: 30, child: _buildJoystick()),
+                if (isMobile) _buildMobileFloatingStatus(subtitle, status),
+                if (isMobile) _buildMobileFeatureTray(subtitle, status),
+                if (_firePlacementMode || _selectedFireHazardId != null)
+                  Positioned(
+                    left: 30,
+                    bottom: 30,
+                    child: _buildFireResizePanel(),
+                  ),
+                if (_routeCalculating) _buildRouteLoadingOverlay(),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildMobileFloatingStatus(String subtitle, String status) {
+    final top = MediaQuery.paddingOf(context).top + 8;
+
+    return Positioned(
+      left: 10,
+      right: 72,
+      top: top,
+      child: IgnorePointer(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF12345A).withValues(alpha: 0.90),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'BPNHS Evacuation Navigator',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Color(0xFFDCE8F7),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Text(
+                status,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Color(0xFFDCE8F7), fontSize: 10),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMobileFeatureTray(String subtitle, String status) {
+    final bottom = MediaQuery.paddingOf(context).bottom + 10;
+
+    return Positioned(
+      left: 10,
+      right: 10,
+      bottom: bottom,
+      child: Material(
+        elevation: 5,
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.92),
+            border: Border.all(color: const Color(0xFFC7D4E2)),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                color: const Color(0xFF12345A),
+                child: const Text(
+                  'FEATURES',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 7, 8, 3),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: SizedBox(
+                        height: 42,
+                        child: FilledButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              moveMode = false;
+                              joystickX = 0;
+                              joystickY = 0;
+                              _mobileMoveOrigin = null;
+                              followActive = false;
+                            });
+                          },
+                          icon: const Icon(Icons.visibility, size: 18),
+                          label: const Text('VIEW'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: !moveMode
+                                ? const Color(0xFF155EEF)
+                                : const Color(0xFFEAF0F7),
+                            foregroundColor: !moveMode
+                                ? Colors.white
+                                : const Color(0xFF12345A),
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: SizedBox(
+                        height: 42,
+                        child: FilledButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              moveMode = true;
+                              routeSelectionMode = false;
+                              joystickX = 0;
+                              joystickY = 0;
+                              _mobileMoveOrigin = null;
+                              followActive = true;
+                            });
+                          },
+                          icon: const Icon(Icons.directions_walk, size: 18),
+                          label: const Text('MOVE'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: moveMode
+                                ? const Color(0xFF155EEF)
+                                : const Color(0xFFEAF0F7),
+                            foregroundColor: moveMode
+                                ? Colors.white
+                                : const Color(0xFF12345A),
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 92),
+
+                child: _buildActionBar(subtitle, status),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
   Widget _buildHeader() {
-    return Container(
-      color: const Color(0xFF12345A),
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-      child: Row(
-        children: [
-          const Icon(Icons.route, color: Colors.white, size: 28),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'BPNHS Evacuation Navigator',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
+    final compact = MediaQuery.sizeOf(context).width < 700;
+
+    return SafeArea(
+      bottom: false,
+      child: Container(
+        color: const Color(0xFF12345A),
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 12 : 20,
+          vertical: compact ? 10 : 14,
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.route, color: Colors.white, size: compact ? 24 : 28),
+            SizedBox(width: compact ? 8 : 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'BPNHS Evacuation Navigator',
+                    maxLines: compact ? 2 : 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: compact ? 18 : 22,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                ),
-                Text(
-                  routeSelectionMode
-                      ? 'ROUTE TEST - tap a destination on the current floor.'
-                      : moveMode
-                      ? 'MOVE USER MODE - use the joystick.'
-                      : 'MAP MODE - drag to pan; pinch to zoom.',
-                  style: const TextStyle(
-                    color: Color(0xFFDCE8F7),
-                    fontSize: 13,
+                  Text(
+                    routeSelectionMode
+                        ? 'ROUTE TEST - tap a destination on the current floor.'
+                        : moveMode
+                        ? 'MOVE USER MODE - use the joystick.'
+                        : 'MAP MODE - drag to pan; pinch to zoom.',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: const Color(0xFFDCE8F7),
+                      fontSize: compact ? 12 : 13,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh, color: Colors.white),
-            tooltip: 'Reset view',
-            onPressed: () {
-              camera.scale = 1;
-              camera.rotation = 0;
-              camera.center([navigator.markerX, navigator.markerY]);
-              setState(() {});
-            },
-          ),
-        ],
+            IconButton(
+              icon: const Icon(Icons.refresh, color: Colors.white),
+              tooltip: 'Reset view',
+              onPressed: () {
+                camera.scale = 1;
+                camera.rotation = 0;
+                camera.center([navigator.markerX, navigator.markerY]);
+                setState(() {});
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildActionBar(String subtitle, String status) {
+    final isCompact = MediaQuery.sizeOf(context).width < 700;
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-      color: Colors.white,
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
+      padding: EdgeInsets.symmetric(
+        horizontal: isCompact ? 10 : 20,
+        vertical: isCompact ? 8 : 10,
+      ),
+      color: isCompact ? Colors.transparent : Colors.white,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            SizedBox(
+              width: isCompact ? 240 : 320,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF183B56),
+                    ),
+                  ),
+                  Text(
+                    status,
+                    style: const TextStyle(
+                      color: Color(0xFF31475E),
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  subtitle,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF183B56),
-                  ),
-                ),
-                Text(
-                  status,
-                  style: const TextStyle(
-                    color: Color(0xFF31475E),
-                    fontSize: 14,
+                const Text('Player size', style: TextStyle(fontSize: 12)),
+                SizedBox(
+                  width: 140,
+                  child: Slider(
+                    min: 8,
+                    max: 52,
+                    value: playerSize,
+                    onChanged: (v) {
+                      playerSize = v;
+                      navigator.collisionRadius = collisionRadius;
+                      _clearRoute();
+                      setState(() {});
+                    },
                   ),
                 ),
               ],
             ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Player size', style: TextStyle(fontSize: 12)),
-              SizedBox(
-                width: 140,
-                child: Slider(
-                  min: 8,
-                  max: 52,
-                  value: playerSize,
-                  onChanged: (v) {
-                    playerSize = v;
-                    navigator.collisionRadius = collisionRadius;
-                    _clearRoute();
-                    setState(() {});
-                  },
+            const SizedBox(width: 16),
+            if (navigator.parent != null && navigator.currentFloor > 1) ...[
+              ElevatedButton.icon(
+                onPressed: _startRouteToFloorOne,
+                icon: const Icon(Icons.stairs),
+                label: Text(
+                  routeTargetFloor == 1 ? 'Routing to F1' : 'To Floor 1',
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: routeTargetFloor == 1
+                      ? const Color(0xFFD9E8FF)
+                      : Colors.white,
+                  foregroundColor: const Color(0xFF12345A),
                 ),
               ),
+              const SizedBox(width: 8),
             ],
-          ),
-          const SizedBox(width: 16),
-          if (navigator.parent != null && navigator.currentFloor > 1) ...[
             ElevatedButton.icon(
-              onPressed: _startRouteToFloorOne,
-              icon: const Icon(Icons.stairs),
-              label: Text(
-                routeTargetFloor == 1 ? 'Routing to F1' : 'To Floor 1',
+              onPressed: () {
+                setState(() {
+                  _firePlacementMode = !_firePlacementMode;
+                  _selectedFireHazardId = null;
+                  routeSelectionMode = false;
+                  moveMode = false;
+                  joystickX = 0;
+                  joystickY = 0;
+                  routeStatus = _firePlacementMode
+                      ? 'Fire simulation: tap the hazard location'
+                      : (navigator.hazards.isEmpty
+                            ? null
+                            : 'Fire simulation active');
+                });
+              },
+              icon: Icon(
+                _firePlacementMode ? Icons.close : Icons.local_fire_department,
               ),
+              label: Text(_firePlacementMode ? 'Cancel fire' : 'Place fire'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: routeTargetFloor == 1
+                backgroundColor: _firePlacementMode
+                    ? const Color(0xFFFFE4E6)
+                    : Colors.white,
+                foregroundColor: const Color(0xFFB42318),
+              ),
+            ),
+            if (navigator.hazards.isNotEmpty) ...[
+              const SizedBox(width: 6),
+              IconButton(
+                onPressed: _clearSimulationHazards,
+                tooltip: 'Clear simulation hazards',
+                icon: const Icon(Icons.delete_sweep_outlined),
+                color: const Color(0xFFB42318),
+              ),
+            ],
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+              onPressed: () =>
+                  _startRecommendedEvacuationRoute(alternative: false),
+              icon: const Icon(Icons.exit_to_app),
+              label: const Text('Main route'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _evacuationRouteRole == 'main'
                     ? const Color(0xFFD9E8FF)
                     : Colors.white,
                 foregroundColor: const Color(0xFF12345A),
               ),
             ),
             const SizedBox(width: 8),
-          ],
-          ElevatedButton.icon(
-            onPressed: () =>
-                _startRecommendedEvacuationRoute(alternative: false),
-            icon: const Icon(Icons.exit_to_app),
-            label: const Text('Main route'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _evacuationRouteRole == 'main'
-                  ? const Color(0xFFD9E8FF)
-                  : Colors.white,
-              foregroundColor: const Color(0xFF12345A),
+            ElevatedButton.icon(
+              onPressed: () =>
+                  _startRecommendedEvacuationRoute(alternative: true),
+              icon: const Icon(Icons.alt_route),
+              label: const Text('Alternative'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _evacuationRouteRole == 'alternative'
+                    ? const Color(0xFFFFE8CC)
+                    : Colors.white,
+                foregroundColor: const Color(0xFF8A4B08),
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-          ElevatedButton.icon(
-            onPressed: () =>
-                _startRecommendedEvacuationRoute(alternative: true),
-            icon: const Icon(Icons.alt_route),
-            label: const Text('Alternative'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _evacuationRouteRole == 'alternative'
-                  ? const Color(0xFFFFE8CC)
-                  : Colors.white,
-              foregroundColor: const Color(0xFF8A4B08),
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+              onPressed: () {
+                setState(() {
+                  routeTargetFloor = null;
+                  routeSelectionMode = !routeSelectionMode;
+                  if (routeSelectionMode) {
+                    moveMode = false;
+                    joystickX = 0;
+                    joystickY = 0;
+                    routeStatus = 'Tap a destination';
+                  } else if (routePoints.isEmpty) {
+                    routeStatus = null;
+                  }
+                });
+              },
+              icon: Icon(routeSelectionMode ? Icons.close : Icons.alt_route),
+              label: Text(routeSelectionMode ? 'Cancel route' : 'Set route'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: routeSelectionMode
+                    ? const Color(0xFFD9E8FF)
+                    : Colors.white,
+                foregroundColor: const Color(0xFF12345A),
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-          ElevatedButton.icon(
-            onPressed: () {
-              setState(() {
-                routeTargetFloor = null;
-                routeSelectionMode = !routeSelectionMode;
-                if (routeSelectionMode) {
-                  moveMode = false;
+            if (routePoints.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: () {
+                  setState(_clearRoute);
+                },
+                tooltip: 'Clear route',
+                icon: const Icon(Icons.route_outlined),
+                color: const Color(0xFF12345A),
+              ),
+            ],
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+              onPressed: () {
+                moveMode = !moveMode;
+                routeSelectionMode = false;
+                followActive = true;
+                if (!moveMode) {
                   joystickX = 0;
                   joystickY = 0;
-                  routeStatus = 'Tap a destination';
-                } else if (routePoints.isEmpty) {
-                  routeStatus = null;
+                }
+                setState(() {});
+              },
+              icon: Icon(moveMode ? Icons.check : Icons.open_with),
+              label: Text(moveMode ? 'Finish moving' : 'Move user'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: moveMode
+                    ? const Color(0xFFD9E8FF)
+                    : Colors.white,
+                foregroundColor: const Color(0xFF12345A),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFireResizePanel() {
+    final editingPlacedFire = _selectedFireHazardId != null;
+
+    return Container(
+      width: 230,
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFF0A5A5)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x22000000),
+            blurRadius: 12,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.local_fire_department,
+                color: Color(0xFFB42318),
+                size: 20,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  editingPlacedFire ? 'Resize fire' : 'Fire size',
+                  style: const TextStyle(
+                    color: Color(0xFF7A271A),
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+              Text(
+                '${_fireRadius.round()}',
+                style: const TextStyle(
+                  color: Color(0xFF7A271A),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              if (editingPlacedFire)
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Close resize controls',
+                  onPressed: () {
+                    setState(() {
+                      _selectedFireHazardId = null;
+                    });
+                  },
+                  icon: const Icon(Icons.close, size: 18),
+                ),
+            ],
+          ),
+          Slider(
+            min: 25,
+            max: 120,
+            divisions: 19,
+            value: _fireRadius.clamp(25.0, 120.0),
+            activeColor: const Color(0xFFE11D48),
+            onChanged: (value) {
+              setState(() {
+                _fireRadius = value;
+                final id = _selectedFireHazardId;
+                if (id != null) {
+                  navigator.resizeHazard(id, value);
                 }
               });
             },
-            icon: Icon(routeSelectionMode ? Icons.close : Icons.alt_route),
-            label: Text(routeSelectionMode ? 'Cancel route' : 'Set route'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: routeSelectionMode
-                  ? const Color(0xFFD9E8FF)
-                  : Colors.white,
-              foregroundColor: const Color(0xFF12345A),
-            ),
-          ),
-          if (routePoints.isNotEmpty) ...[
-            const SizedBox(width: 8),
-            IconButton(
-              onPressed: () {
-                setState(_clearRoute);
-              },
-              tooltip: 'Clear route',
-              icon: const Icon(Icons.route_outlined),
-              color: const Color(0xFF12345A),
-            ),
-          ],
-          const SizedBox(width: 8),
-          ElevatedButton.icon(
-            onPressed: () {
-              moveMode = !moveMode;
-              routeSelectionMode = false;
-              followActive = true;
-              if (!moveMode) {
-                joystickX = 0;
-                joystickY = 0;
+            onChangeEnd: (_) {
+              final role = _evacuationRouteRole;
+              if (_selectedFireHazardId != null && role != null) {
+                _startRecommendedEvacuationRoute(
+                  alternative: role == 'alternative',
+                );
               }
-              setState(() {});
             },
-            icon: Icon(moveMode ? Icons.check : Icons.open_with),
-            label: Text(moveMode ? 'Finish moving' : 'Move user'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: moveMode
-                  ? const Color(0xFFD9E8FF)
-                  : Colors.white,
-              foregroundColor: const Color(0xFF12345A),
-            ),
+          ),
+          Text(
+            editingPlacedFire
+                ? 'Drag to resize this fire zone.'
+                : 'Choose the size, then tap the map.',
+            style: const TextStyle(color: Color(0xFF7C5B55), fontSize: 11),
           ),
         ],
       ),
@@ -457,6 +918,56 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     );
   }
 
+  void _onFireTap(TapUpDetails details) {
+    if (!_firePlacementMode || navigator.transition != null) return;
+
+    final world = camera.world(<double>[
+      details.localPosition.dx,
+      details.localPosition.dy,
+    ]);
+
+    final activeRole = _evacuationRouteRole;
+    final fire = navigator.addFireHazard(
+      world[0],
+      world[1],
+      radius: _fireRadius,
+    );
+
+    setState(() {
+      _selectedFireHazardId = fire.id;
+      _fireRadius = fire.radius;
+      _firePlacementMode = false;
+      routeSelectionMode = false;
+      routeStatus =
+          'Fire hazard placed · evacuation routes updated to avoid it';
+    });
+
+    if (activeRole != null) {
+      _startRecommendedEvacuationRoute(
+        alternative: activeRole == 'alternative',
+      );
+    }
+  }
+
+  void _clearSimulationHazards() {
+    final activeRole = _evacuationRouteRole;
+    navigator.clearHazards();
+
+    setState(() {
+      _selectedFireHazardId = null;
+      _firePlacementMode = false;
+      routeStatus = activeRole == null
+          ? 'Simulation hazards cleared'
+          : 'Hazards cleared · recalculating evacuation route';
+    });
+
+    if (activeRole != null) {
+      _startRecommendedEvacuationRoute(
+        alternative: activeRole == 'alternative',
+      );
+    }
+  }
+
   void _onJoystickStart(DragStartDetails details) {
     _updateJoystickPosition(details.localPosition);
   }
@@ -512,6 +1023,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       _evacuationRouteRole == 'alternative' ? 'Alternative' : 'Main';
 
   void _startRecommendedEvacuationRoute({required bool alternative}) {
+    _firePlacementMode = false;
     if (navigator.transition != null) {
       setState(() {
         routeStatus = 'Finish the stair transition first';
@@ -519,6 +1031,10 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       });
       return;
     }
+
+    _beginRoutePresentation(
+      alternative ? 'Calculating alternative path…' : 'Calculating main path…',
+    );
 
     final ranked = navigator.rankEvacuationGates();
     final index = alternative ? 1 : 0;
@@ -530,6 +1046,10 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             : 'No valid campus evacuation route is available';
         _evacuationGateKind = null;
         _evacuationRouteRole = null;
+        _routeCalculating = false;
+        _routeCalculationHold = 0;
+        _routeRevealAnimating = false;
+        _routeRevealProgress = 1;
       });
       return;
     }
@@ -637,6 +1157,9 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     routeFloor = 1;
     _routeRefreshElapsed = 0;
 
+    if (!_routeCalculating) {
+      _beginRoutePresentation('Calculating campus exit path…');
+    }
     final route = navigator.findFloor1CampusRoute(
       destination[0],
       destination[1],
@@ -686,6 +1209,9 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       return;
     }
 
+    if (!_routeCalculating) {
+      _beginRoutePresentation('Calculating floor route…');
+    }
     final leg = navigator.findRouteTowardFloor(targetFloor);
     if (leg == null) {
       routePoints = const [];
@@ -969,6 +1495,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         // and immediately reroute through a valid exit instead of cancelling.
         routeBuildingId = currentBuildingId;
         routeFloor = 1;
+        _beginRoutePresentation('Recalculating evacuation path…');
         final recoveryRoute = navigator.findFloor1CampusRoute(
           destination[0],
           destination[1],
@@ -1085,6 +1612,10 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     _campusRouteDestination = null;
     _evacuationGateKind = null;
     _evacuationRouteRole = null;
+    _routeCalculating = false;
+    _routeCalculationHold = 0;
+    _routeRevealAnimating = false;
+    _routeRevealProgress = 1;
     routeStatus = null;
     routeBuildingId = null;
     routeFloor = null;
@@ -1133,6 +1664,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       return;
     }
 
+    _beginRoutePresentation('Calculating path…');
     final route = navigator.findSameFloorRoute(targetX, targetY);
     setState(() {
       routeTargetFloor = null;
@@ -1160,7 +1692,19 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   double _gestureScale = 1;
 
   void _onScaleStart(ScaleStartDetails details) {
+    final isMobile = MediaQuery.sizeOf(context).width < 700;
+
+    if (isMobile && moveMode) {
+      _mobileMoveOrigin = details.focalPoint;
+      joystickX = 0;
+      joystickY = 0;
+      followActive = true;
+      setState(() {});
+      return;
+    }
+
     if (moveMode) return;
+
     _gestureAnchor = camera.world([
       details.focalPoint.dx,
       details.focalPoint.dy,
@@ -1169,12 +1713,51 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   }
 
   void _onScaleUpdate(ScaleUpdateDetails details) {
+    final isMobile = MediaQuery.sizeOf(context).width < 700;
+
+    if (isMobile && moveMode) {
+      final origin = _mobileMoveOrigin;
+      if (origin == null) {
+        _mobileMoveOrigin = details.focalPoint;
+        return;
+      }
+
+      final delta = details.focalPoint - origin;
+      final distance = delta.distance;
+
+      if (distance < 6) {
+        joystickX = 0;
+        joystickY = 0;
+      } else {
+        final clampedDistance = distance.clamp(0.0, _mobileMoveRadius);
+        final strength = clampedDistance / _mobileMoveRadius;
+        joystickX = (delta.dx / distance) * strength;
+        joystickY = (delta.dy / distance) * strength;
+        followActive = true;
+      }
+
+      setState(() {});
+      return;
+    }
+
     if (moveMode || _gestureAnchor == null) return;
+
     camera.scale = (_gestureScale * details.scale).clamp(0.3, 3.0);
     final focal = [details.focalPoint.dx, details.focalPoint.dy];
     final current = camera.screen(_gestureAnchor!);
     camera.x += focal[0] - current[0];
     camera.y += focal[1] - current[1];
     setState(() {});
+  }
+
+  void _onScaleEnd(ScaleEndDetails details) {
+    final isMobile = MediaQuery.sizeOf(context).width < 700;
+
+    if (isMobile && moveMode) {
+      _mobileMoveOrigin = null;
+      joystickX = 0;
+      joystickY = 0;
+      setState(() {});
+    }
   }
 }

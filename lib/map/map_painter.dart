@@ -21,6 +21,7 @@ class MapPainter extends CustomPainter {
   final double playerSize;
   final double collisionRadius;
   final List<List<double>> routePoints;
+  final double routeRevealProgress;
 
   MapPainter({
     required this.scene,
@@ -33,6 +34,7 @@ class MapPainter extends CustomPainter {
     this.playerSize = 20,
     this.collisionRadius = 10,
     this.routePoints = const [],
+    this.routeRevealProgress = 1,
   });
 
   FloorTransform? _ft;
@@ -77,6 +79,7 @@ class MapPainter extends CustomPainter {
       _renderBuilding(canvas, building);
     }
 
+    _drawHazards(canvas);
     _drawRoute(canvas);
 
     canvas.restore();
@@ -159,13 +162,97 @@ class MapPainter extends CustomPainter {
     }
   }
 
+  void _drawHazards(Canvas canvas) {
+    if (navigator.visibleHazards.isEmpty) return;
+
+    final safeScale = cameraScale.abs() < 1e-9 ? 1.0 : cameraScale.abs();
+
+    for (final hazard in navigator.visibleHazards) {
+      final center = Offset(hazard.x, hazard.y);
+
+      final fill = Paint()
+        ..color = const Color(0x44DC2626)
+        ..style = PaintingStyle.fill;
+      canvas.drawCircle(center, hazard.radius, fill);
+
+      final border = Paint()
+        ..color = const Color(0xFFE11D48)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3 / safeScale;
+      canvas.drawCircle(center, hazard.radius, border);
+
+      final core = Paint()
+        ..color = const Color(0xFFF97316)
+        ..style = PaintingStyle.fill;
+      canvas.drawCircle(center, 11 / safeScale, core);
+
+      final textPainter = TextPainter(
+        text: TextSpan(
+          text: 'FIRE',
+          style: TextStyle(
+            color: const Color(0xFF991B1B),
+            fontSize: 11 / safeScale,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+
+      textPainter.paint(
+        canvas,
+        Offset(
+          hazard.x - textPainter.width / 2,
+          hazard.y + hazard.radius + 6 / safeScale,
+        ),
+      );
+    }
+  }
+
   void _drawRoute(Canvas canvas) {
     if (routePoints.length < 2) return;
 
     final safeScale = cameraScale.abs() < 1e-9 ? 1.0 : cameraScale.abs();
-    final path = Path()..moveTo(routePoints.first[0], routePoints.first[1]);
+    final progress = routeRevealProgress.clamp(0.0, 1.0);
+
+    var totalLength = 0.0;
+    final segmentLengths = <double>[];
     for (var i = 1; i < routePoints.length; i++) {
-      path.lineTo(routePoints[i][0], routePoints[i][1]);
+      final dx = routePoints[i][0] - routePoints[i - 1][0];
+      final dy = routePoints[i][1] - routePoints[i - 1][1];
+      final length = math.sqrt(dx * dx + dy * dy);
+      segmentLengths.add(length);
+      totalLength += length;
+    }
+    if (totalLength < 1e-9) return;
+
+    final revealLength = totalLength * progress;
+    var drawnLength = 0.0;
+
+    final path = Path()..moveTo(routePoints.first[0], routePoints.first[1]);
+
+    for (var i = 1; i < routePoints.length; i++) {
+      final segmentLength = segmentLengths[i - 1];
+      if (segmentLength < 1e-9) continue;
+
+      final remaining = revealLength - drawnLength;
+      if (remaining <= 0) break;
+
+      if (remaining >= segmentLength) {
+        path.lineTo(routePoints[i][0], routePoints[i][1]);
+        drawnLength += segmentLength;
+        continue;
+      }
+
+      final t = (remaining / segmentLength).clamp(0.0, 1.0);
+      final x =
+          routePoints[i - 1][0] +
+          (routePoints[i][0] - routePoints[i - 1][0]) * t;
+      final y =
+          routePoints[i - 1][1] +
+          (routePoints[i][1] - routePoints[i - 1][1]) * t;
+      path.lineTo(x, y);
+      drawnLength = revealLength;
+      break;
     }
 
     final routePaint = Paint()
@@ -175,6 +262,9 @@ class MapPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
     canvas.drawPath(path, routePaint);
+
+    // Destination appears only after the animated route has reached it.
+    if (progress < 0.999) return;
 
     final destination = routePoints.last;
     final markerPaint = Paint()
