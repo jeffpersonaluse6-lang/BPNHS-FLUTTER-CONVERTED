@@ -205,6 +205,21 @@ List<(double, double)> solidArcs(MapItem item, {List<MapItem>? openings}) {
   return arcs;
 }
 
+/// Convert a Barrier to a filled wall polygon (4 corners).
+/// Matches Python wall_polygon() from scene_renderer.py.
+List<List<double>> wallPolygon(Barrier barrier) {
+  final angle = math.atan2(
+      barrier.endY - barrier.startY, barrier.endX - barrier.startX);
+  final nx = -math.sin(angle) * barrier.radius;
+  final ny = math.cos(angle) * barrier.radius;
+  return [
+    [barrier.startX + nx, barrier.startY + ny],
+    [barrier.endX + nx, barrier.endY + ny],
+    [barrier.endX - nx, barrier.endY - ny],
+    [barrier.startX - nx, barrier.startY - ny],
+  ];
+}
+
 double collisionThickness(MapItem item) {
   if (item.collisionThickness != null) return item.collisionThickness!;
   if (item.kind == 'railing') return item.stroke + 4;

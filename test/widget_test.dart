@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_runtime/models/map_scene.dart';
 import 'package:flutter_runtime/models/map_item.dart';
@@ -108,6 +109,8 @@ void main() {
         y: 200,
         width: 300,
         height: 400,
+        floorWidth: 300,
+        floorHeight: 400,
         id: 'b1',
       );
       final ft = FloorTransform.build(parent);
@@ -137,9 +140,11 @@ void main() {
 
     test('rotation affects projection', () {
       final parent0 = MapItem(
-          kind: 'building', x: 0, y: 0, width: 100, height: 100, id: 'a');
+          kind: 'building', x: 0, y: 0, width: 100, height: 100,
+          floorWidth: 100, floorHeight: 100, id: 'a');
       final parent90 = MapItem(
-          kind: 'building', x: 0, y: 0, width: 100, height: 100, rotation: 90, id: 'b');
+          kind: 'building', x: 0, y: 0, width: 100, height: 100,
+          floorWidth: 100, floorHeight: 100, rotation: 90, id: 'b');
       final ft0 = FloorTransform.build(parent0);
       final ft90 = FloorTransform.build(parent90);
       final w0 = ft0.project(10, 0);
@@ -156,6 +161,8 @@ void main() {
         y: 0,
         width: 100,
         height: 100,
+        floorWidth: 100,
+        floorHeight: 100,
         mirrored: true,
         id: 'm',
       );
@@ -222,6 +229,8 @@ void main() {
         y: 300,
         width: 200,
         height: 150,
+        floorWidth: 200,
+        floorHeight: 150,
         id: 'b',
       );
       final ft = FloorTransform.build(parent);
@@ -418,6 +427,214 @@ void main() {
       expect(item.floorOriginY, 10);
       expect(item.gateOpen, true);
       expect(item.id, 'test_item');
+    });
+  });
+
+  group('Camera canvas parity', () {
+    test('canvas transform matches camera.screen() for multiple positions', () {
+      final cam = SmoothCamera(width: 800, height: 600, x: 100, y: 50, scale: 1.5, rotation: 0.3);
+      final worldPoints = [
+        [0.0, 0.0],
+        [100.0, 200.0],
+        [500.0, 300.0],
+        [1510.0, 620.0],
+      ];
+      for (final wp in worldPoints) {
+        final screenPt = cam.screen(wp);
+        final canvasX = cam.x + cam.scale * (math.cos(cam.rotation) * wp[0] - math.sin(cam.rotation) * wp[1]);
+        final canvasY = cam.y + cam.scale * (math.sin(cam.rotation) * wp[0] + math.cos(cam.rotation) * wp[1]);
+        expect(screenPt[0], closeTo(canvasX, 1e-9),
+            reason: 'screen x mismatch for $wp');
+        expect(screenPt[1], closeTo(canvasY, 1e-9),
+            reason: 'screen y mismatch for $wp');
+      }
+    });
+
+    test('canvas translate/scale/rotate produces same result as camera.screen()', () {
+      final cam = SmoothCamera(width: 1024, height: 768, x: 200, y: 150, scale: 2.0, rotation: 0.5);
+      final wp = [300.0, 400.0];
+      final expected = cam.screen(wp);
+      final cosR = math.cos(cam.rotation);
+      final sinR = math.sin(cam.rotation);
+      final cx = cam.x + cam.scale * (cosR * wp[0] - sinR * wp[1]);
+      final cy = cam.y + cam.scale * (sinR * wp[0] + cosR * wp[1]);
+      expect(expected[0], closeTo(cx, 1e-9));
+      expect(expected[1], closeTo(cy, 1e-9));
+    });
+
+    test('canvas transform with zero rotation matches scale/translate', () {
+      final cam = SmoothCamera(width: 800, height: 600, x: 50, y: 30, scale: 1.5, rotation: 0);
+      final wp = [100.0, 200.0];
+      final expected = cam.screen(wp);
+      expect(expected[0], closeTo(50 + 1.5 * 100, 1e-9));
+      expect(expected[1], closeTo(30 + 1.5 * 200, 1e-9));
+    });
+  });
+
+  group('Geometry parity with Python', () {
+    test('FloorTransform.project matches Python local_to_world formula', () {
+      final parent = MapItem(
+        kind: 'building',
+        x: 100,
+        y: 200,
+        width: 300,
+        height: 200,
+        rotation: 15,
+        mirrored: false,
+        floorWidth: 1436,
+        floorHeight: 751,
+        id: 'parity1',
+      );
+      final ft = FloorTransform.build(parent);
+      final sx = 300.0 / 1436;
+      final sy = 200.0 / 751;
+      final angle = 15.0 * math.pi / 180;
+      final cosA = math.cos(angle);
+      final sinA = math.sin(angle);
+      final localX = 50.0;
+      final localY = 30.0;
+      final px = localX * sx;
+      final py = localY * sy;
+      final expectedX = 100 + px * cosA - py * sinA;
+      final expectedY = 200 + px * sinA + py * cosA;
+      final result = ft.project(localX, localY);
+      expect(result[0], closeTo(expectedX, 1e-9));
+      expect(result[1], closeTo(expectedY, 1e-9));
+    });
+
+    test('FloorTransform.project with mirror matches Python', () {
+      final parent = MapItem(
+        kind: 'building',
+        x: 500,
+        y: 300,
+        width: 200,
+        height: 150,
+        mirrored: true,
+        id: 'parity2',
+      );
+      final ft = FloorTransform.build(parent);
+      final sx = 200.0 / 1436;
+      final sy = 150.0 / 751;
+      final localX = 42.0;
+      final localY = 77.0;
+      var px = localX * sx;
+      final py = localY * sy;
+      px = 200 - px;
+      final expectedX = 500 + px;
+      final expectedY = 300 + py;
+      final result = ft.project(localX, localY);
+      expect(result[0], closeTo(expectedX, 1e-9));
+      expect(result[1], closeTo(expectedY, 1e-9));
+    });
+
+    test('FloorTransform.project with rotation and origin offset', () {
+      final parent = MapItem(
+        kind: 'building',
+        x: 400,
+        y: 200,
+        width: 300,
+        height: 200,
+        rotation: 30,
+        floorOriginX: 50,
+        floorOriginY: 25,
+        id: 'parity3',
+      );
+      final ft = FloorTransform.build(parent);
+      final sx = 300.0 / 1436;
+      final sy = 200.0 / 751;
+      final angle = 30.0 * math.pi / 180;
+      final cosA = math.cos(angle);
+      final sinA = math.sin(angle);
+      final localX = 100.0;
+      final localY = 60.0;
+      final px = (localX - 50) * sx;
+      final py = (localY - 25) * sy;
+      final expectedX = 400 + px * cosA - py * sinA;
+      final expectedY = 200 + px * sinA + py * cosA;
+      final result = ft.project(localX, localY);
+      expect(result[0], closeTo(expectedX, 1e-9));
+      expect(result[1], closeTo(expectedY, 1e-9));
+    });
+
+    test('wallPolygon matches Python wall_polygon formula', () {
+      final barrier = Barrier(
+        startX: 100, startY: 200,
+        endX: 300, endY: 200,
+        radius: 5, flat: true,
+      );
+      final polygon = wallPolygon(barrier);
+      expect(polygon.length, 4);
+      expect(polygon[0][0], closeTo(100, 1e-9));
+      expect(polygon[0][1], closeTo(205, 1e-9));
+      expect(polygon[1][0], closeTo(300, 1e-9));
+      expect(polygon[1][1], closeTo(205, 1e-9));
+      expect(polygon[2][0], closeTo(300, 1e-9));
+      expect(polygon[2][1], closeTo(195, 1e-9));
+      expect(polygon[3][0], closeTo(100, 1e-9));
+      expect(polygon[3][1], closeTo(195, 1e-9));
+    });
+
+    test('wallPolygon with angled wall', () {
+      final barrier = Barrier(
+        startX: 0, startY: 0,
+        endX: 100, endY: 100,
+        radius: 3, flat: true,
+      );
+      final polygon = wallPolygon(barrier);
+      expect(polygon.length, 4);
+      final angle = math.atan2(100, 100);
+      final nx = -math.sin(angle) * 3;
+      final ny = math.cos(angle) * 3;
+      expect(polygon[0][0], closeTo(nx, 1e-9));
+      expect(polygon[0][1], closeTo(ny, 1e-9));
+      expect(polygon[1][0], closeTo(100 + nx, 1e-9));
+      expect(polygon[1][1], closeTo(100 + ny, 1e-9));
+      expect(polygon[2][0], closeTo(100 - nx, 1e-9));
+      expect(polygon[2][1], closeTo(100 - ny, 1e-9));
+      expect(polygon[3][0], closeTo(-nx, 1e-9));
+      expect(polygon[3][1], closeTo(-ny, 1e-9));
+    });
+
+    test('Python floor_scale matches Flutter _floorScale', () {
+      final parent = MapItem(
+        kind: 'building',
+        x: 0, y: 0,
+        width: 300, height: 200,
+        floorWidth: 1436,
+        floorHeight: 751,
+        id: 'fs1',
+      );
+      final sx = parent.width / (parent.floorWidth ?? 1436);
+      final sy = parent.height / (parent.floorHeight ?? 751);
+      expect(sx, closeTo(300.0 / 1436, 1e-9));
+      expect(sy, closeTo(200.0 / 751, 1e-9));
+    });
+
+    test('Python project() matches Flutter FloorTransform.project() for floor items', () {
+      final parent = MapItem(
+        kind: 'building',
+        x: 100, y: 200,
+        width: 300, height: 200,
+        rotation: 0,
+        id: 'proj1',
+      );
+      final ft = FloorTransform.build(parent);
+      final item = MapItem(
+        kind: 'room',
+        x: 50, y: 30,
+        width: 100, height: 80,
+        id: 'proj_item',
+      );
+      final itemWorld = item.localToWorld(0, 0);
+      final flutterResult = ft.project(itemWorld[0], itemWorld[1]);
+      final sx = 300.0 / 1436;
+      final sy = 200.0 / 751;
+      final pyX = (itemWorld[0] - 0) * sx;
+      final pyY = (itemWorld[1] - 0) * sy;
+      final pyResultX = 100 + pyX;
+      final pyResultY = 200 + pyY;
+      expect(flutterResult[0], closeTo(pyResultX, 1e-9));
+      expect(flutterResult[1], closeTo(pyResultY, 1e-9));
     });
   });
 }

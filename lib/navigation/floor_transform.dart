@@ -14,8 +14,8 @@ class FloorTransform {
       this.parent, this.sx, this.sy, this.cosine, this.sine);
 
   factory FloorTransform.build(MapItem parent) {
-    final sx = parent.width / (parent.floorWidth ?? parent.width);
-    final sy = parent.height / (parent.floorHeight ?? parent.height);
+    final sx = parent.width / (parent.floorWidth ?? 1436);
+    final sy = parent.height / (parent.floorHeight ?? 751);
     final angle = parent.rotation * math.pi / 180;
     return FloorTransform(parent, sx, sy, math.cos(angle), math.sin(angle));
   }
