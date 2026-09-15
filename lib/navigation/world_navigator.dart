@@ -6,6 +6,7 @@ import 'collision.dart';
 import 'stairs.dart';
 import 'floor_transform.dart';
 import 'runtime_index.dart';
+import 'same_floor_pathfinder.dart';
 
 const String campus = 'Campus';
 const double transitionThreshold = 0.05;
@@ -222,6 +223,37 @@ class WorldNavigator {
 
   FloorTransform floorTransform(MapItem building) {
     return _transforms[building.id] ?? FloorTransform.build(building);
+  }
+
+
+  /// Stage 1 auto-pathing: route on the player's current surface only.
+  ///
+  /// Stairs/multi-floor routing are deliberately deferred to the next stage.
+  /// During an active stair transition this returns no route.
+  List<List<double>> findSameFloorRoute(double targetX, double targetY) {
+    if (transition != null) return const <List<double>>[];
+
+    final List<Barrier> barriers;
+    if (parent == null || currentFloor == 1) {
+      // This exactly matches the collision source used by _allowed() on Campus
+      // and Floor 1, including campus barriers and every projected Floor 1
+      // barrier.
+      barriers = groundBarriers;
+    } else {
+      final key = '${parent!.id}:$currentFloor';
+      barriers = _colliders[key]?.$1 ?? const <Barrier>[];
+    }
+
+    final pathfinder = SameFloorPathfinder(
+      barriers: barriers,
+      playerRadius: collisionRadius,
+      width: scene.width,
+      height: scene.height,
+    );
+    return pathfinder.findPath(
+      [markerX, markerY],
+      [targetX, targetY],
+    );
   }
 
   RuntimeIndex<StairSection> _buildStairIndex(List<StairSection> stairs, MapItem building) {
