@@ -9,8 +9,6 @@ import '../navigation/world_navigator.dart';
 
 const double _defaultFloorWidth = 1436;
 const double _defaultFloorHeight = 751;
-const wallKinds = {'wall', 'room', 'circle_wall'};
-const roofKinds = {'roof', 'gazebo_roof', 'court_roof'};
 
 class MapPainter extends CustomPainter {
   final MapScene scene;
@@ -58,15 +56,18 @@ class MapPainter extends CustomPainter {
     canvas.drawRect(Rect.fromLTWH(0, 0, scene.width, scene.height), paint);
 
     final campusItems = scene.floors['Campus'] ?? [];
-    final campusOpenings = _openingsFor(campusItems);
+    final campusIndex = OpeningIndex(campusItems);
 
     for (final item in campusItems) {
       if (item.kind == 'building' || item.kind == 'entry_zone') continue;
-      if (roofKinds.contains(item.kind)) continue;
       _ft = null;
       _scale = 1;
       _layerOpacity = 1;
-      _renderItem(canvas, item, campusOpenings);
+      if (roofKinds.contains(item.kind)) {
+        _renderItem(canvas, item, null);
+      } else {
+        _renderItem(canvas, item, campusIndex.forWall(item));
+      }
     }
 
     for (final building in scene.buildings()) {
@@ -113,25 +114,33 @@ class MapPainter extends CustomPainter {
       final opacity = opacities[floor] ?? 0;
       if (opacity <= 0) continue;
       final items = scene.floorItems(building.id, floor);
-      final openings = _openingsFor(items);
+      final floorIndex = OpeningIndex(items);
       for (final item in items) {
         if (item.kind == 'entry_zone') continue;
         _ft = ft;
         _scale = bscale;
         _layerOpacity = opacity;
-        _renderItem(canvas, item, openings);
+        if (roofKinds.contains(item.kind)) {
+          _renderItem(canvas, item, null);
+        } else {
+          _renderItem(canvas, item, floorIndex.forWall(item));
+        }
       }
     }
 
     final roofItems = scene.roofItems(building.id);
     final roofOp = navigator.roofOpacity(building, navigator.markerX, navigator.markerY);
     if (roofOp > 0) {
-      final roofOpenings = _openingsFor(roofItems);
+      final roofIndex = OpeningIndex(roofItems);
       for (final item in roofItems) {
         _ft = ft;
         _scale = bscale;
         _layerOpacity = roofOp;
-        _renderItem(canvas, item, roofOpenings);
+        if (roofKinds.contains(item.kind)) {
+          _renderItem(canvas, item, null);
+        } else {
+          _renderItem(canvas, item, roofIndex.forWall(item));
+        }
       }
     }
   }
@@ -168,13 +177,7 @@ class MapPainter extends CustomPainter {
     return (parent.width / fw, parent.height / fh);
   }
 
-  List<MapItem> _openingsFor(List<MapItem> items) {
-    return items
-        .where((i) => i.kind == 'door' || i.kind == 'double_door' || i.kind == 'opening')
-        .toList();
-  }
-
-  void _renderItem(Canvas canvas, MapItem item, List<MapItem> openings) {
+  void _renderItem(Canvas canvas, MapItem item, List<MapItem>? openings) {
     final paint = Paint();
     paint.color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
 
@@ -215,7 +218,7 @@ class MapPainter extends CustomPainter {
     }
   }
 
-  void _renderWallFilled(Canvas canvas, MapItem item, Paint paint, List<MapItem> openings) {
+  void _renderWallFilled(Canvas canvas, MapItem item, Paint paint, List<MapItem>? openings) {
     if (item.stroke <= 0) return;
     final sections = wallSections(item, openings: openings);
     paint
@@ -236,7 +239,7 @@ class MapPainter extends CustomPainter {
     }
   }
 
-  void _renderRoomFilled(Canvas canvas, MapItem item, Paint paint, List<MapItem> openings) {
+  void _renderRoomFilled(Canvas canvas, MapItem item, Paint paint, List<MapItem>? openings) {
     if (item.fill != 'none') {
       final p0 = _wx(0, 0, item);
       final p1 = _wx(item.width, 0, item);
@@ -276,7 +279,7 @@ class MapPainter extends CustomPainter {
     }
   }
 
-  void _renderCircleWallFilled(Canvas canvas, MapItem item, Paint paint, List<MapItem> openings) {
+  void _renderCircleWallFilled(Canvas canvas, MapItem item, Paint paint, List<MapItem>? openings) {
     if (item.stroke <= 0) return;
     final radius = math.max(0.5, item.stroke / 2);
     for (final arcRange in solidArcs(item, openings: openings)) {
@@ -671,7 +674,7 @@ class MapPainter extends CustomPainter {
     }
   }
 
-  void _renderRoof(Canvas canvas, MapItem item, Paint paint, List<MapItem> openings) {
+  void _renderRoof(Canvas canvas, MapItem item, Paint paint, List<MapItem>? openings) {
     _renderRoomFilled(canvas, item, paint, openings);
 
     final inset = math.min(item.width, item.height) / 2;

@@ -886,6 +886,209 @@ void main() {
       expect(result[1], closeTo(before[1], 1.0));
     });
   });
+
+  group('OpeningIndex spatial filtering', () {
+    test('only relevant openings cut a wall', () {
+      final items = [
+        MapItem.fromJson({
+          'kind': 'wall', 'id': 'w1', 'x': 100, 'y': 100,
+          'width': 200, 'height': 0, 'stroke': 4, 'blocking': true,
+        }),
+        MapItem.fromJson({
+          'kind': 'door', 'id': 'd1', 'x': 190, 'y': 96,
+          'width': 20, 'height': 8, 'blocking': false,
+        }),
+      ];
+      final index = OpeningIndex(items);
+      final wall = items[0];
+      final openings = index.forWall(wall);
+      expect(openings.length, 1);
+      expect(openings[0].id, 'd1');
+    });
+
+    test('unrelated door does not remove another wall', () {
+      final items = [
+        MapItem.fromJson({
+          'kind': 'wall', 'id': 'w1', 'x': 100, 'y': 100,
+          'width': 200, 'height': 0, 'stroke': 4, 'blocking': true,
+        }),
+        MapItem.fromJson({
+          'kind': 'wall', 'id': 'w2', 'x': 500, 'y': 500,
+          'width': 100, 'height': 0, 'stroke': 4, 'blocking': true,
+        }),
+        MapItem.fromJson({
+          'kind': 'door', 'id': 'd1', 'x': 190, 'y': 96,
+          'width': 20, 'height': 8, 'blocking': false,
+        }),
+      ];
+      final index = OpeningIndex(items);
+      final w1Sections = wallSections(items[0], openings: index.forWall(items[0]));
+      final w2Sections = wallSections(items[1], openings: index.forWall(items[1]));
+      expect(w1Sections.length, 2);
+      expect(w2Sections.length, 1);
+      final w2TotalLength = w2Sections.fold(0.0, (sum, s) {
+        final dx = s.endX - s.startX;
+        final dy = s.endY - s.startY;
+        return sum + math.sqrt(dx * dx + dy * dy);
+      });
+      expect(w2TotalLength, closeTo(100, 1));
+    });
+
+    test('door far from wall does not produce a gap', () {
+      final items = [
+        MapItem.fromJson({
+          'kind': 'wall', 'id': 'w1', 'x': 100, 'y': 100,
+          'width': 200, 'height': 0, 'stroke': 4, 'blocking': true,
+        }),
+        MapItem.fromJson({
+          'kind': 'door', 'id': 'd1', 'x': 100, 'y': 500,
+          'width': 20, 'height': 8, 'blocking': false,
+        }),
+      ];
+      final index = OpeningIndex(items);
+      final sections = wallSections(items[0], openings: index.forWall(items[0]));
+      final totalLength = sections.fold(0.0, (sum, s) {
+        final dx = s.endX - s.startX;
+        final dy = s.endY - s.startY;
+        return sum + math.sqrt(dx * dx + dy * dy);
+      });
+      expect(totalLength, closeTo(200, 1));
+    });
+  });
+
+  group('Circle wall outer/inner radii match Python', () {
+    test('circle wall outer and inner radii', () {
+      final item = MapItem.fromJson({
+        'kind': 'circle_wall', 'id': 'cw1',
+        'x': 100, 'y': 100, 'width': 60, 'height': 60,
+        'stroke': 6, 'color': '#111111', 'blocking': true,
+      });
+      final radius = item.stroke / 2;
+      final outerW = item.width + 2 * radius;
+      final outerH = item.height + 2 * radius;
+      final innerW = math.max(0.001, item.width - 2 * radius);
+      final innerH = math.max(0.001, item.height - 2 * radius);
+      expect(outerW, 66);
+      expect(outerH, 66);
+      expect(innerW, 54);
+      expect(innerH, 54);
+    });
+
+    test('circle wall opening remains in correct angular position', () {
+      final item = MapItem.fromJson({
+        'kind': 'circle_wall', 'id': 'cw2',
+        'x': 100, 'y': 100, 'width': 60, 'height': 60,
+        'stroke': 6, 'color': '#111111', 'blocking': true,
+        'circle_openings': [
+          {'angle': 0, 'width': 15, 'id': 'co1'},
+        ],
+      });
+      final arcs = solidArcs(item);
+      final totalArc = arcs.fold(0.0, (sum, a) => sum + (a.$2 - a.$1));
+      expect(totalArc, lessThan(2 * math.pi));
+      final openings = MapItem.fromJson({
+        'kind': 'opening', 'id': 'o1',
+        'x': 100 + 30, 'y': 96, 'width': 15, 'height': 8,
+        'blocking': false,
+      });
+      final arcsWithOpening = solidArcs(item, openings: [openings]);
+      final totalWithOpening = arcsWithOpening.fold(0.0, (sum, a) => sum + (a.$2 - a.$1));
+      expect(totalWithOpening, closeTo(totalArc, 0.01));
+    });
+  });
+
+  group('Gazebo roof dimensions', () {
+    test('gazebo roof has 8 radial sections', () {
+      final item = MapItem.fromJson({
+        'kind': 'gazebo_roof', 'id': 'gr1',
+        'x': 100, 'y': 100, 'width': 80, 'height': 80,
+        'fill': '#DDDDDD', 'color': '#111111', 'stroke': 2,
+      });
+      expect(item.width, 80);
+      expect(item.height, 80);
+    });
+
+    test('inner ring is 92% of full size', () {
+      final item = MapItem.fromJson({
+        'kind': 'gazebo_roof', 'id': 'gr2',
+        'x': 100, 'y': 100, 'width': 80, 'height': 80,
+        'fill': '#DDDDDD', 'color': '#111111', 'stroke': 2,
+      });
+      final innerW = item.width * 0.92;
+      final innerH = item.height * 0.92;
+      expect(innerW, closeTo(73.6, 0.01));
+      expect(innerH, closeTo(73.6, 0.01));
+    });
+
+    test('center dot is 8% of full size', () {
+      final item = MapItem.fromJson({
+        'kind': 'gazebo_roof', 'id': 'gr3',
+        'x': 100, 'y': 100, 'width': 80, 'height': 80,
+        'fill': '#DDDDDD', 'color': '#111111', 'stroke': 2,
+      });
+      final dotW = item.width * 0.08;
+      final dotH = item.height * 0.08;
+      expect(dotW, closeTo(6.4, 0.01));
+      expect(dotH, closeTo(6.4, 0.01));
+    });
+  });
+
+  group('Court roof primitives', () {
+    test('court roof fill and rib count', () {
+      final item = MapItem.fromJson({
+        'kind': 'court_roof', 'id': 'cr1',
+        'x': 100, 'y': 100, 'width': 200, 'height': 100,
+        'fill': '#CCCCCC', 'color': '#111111', 'stroke': 2,
+      });
+      final horizontal = item.width >= item.height;
+      final count = math.max(4, math.min(80, (horizontal ? item.width : item.height) / 48).ceil());
+      expect(horizontal, isTrue);
+      expect(count, greaterThanOrEqualTo(4));
+      expect(count, lessThanOrEqualTo(80));
+    });
+  });
+
+  group('Normal roof outline and seam geometry', () {
+    test('roof seam hip lines connect corners to inset points', () {
+      final w = 120.0;
+      final h = 80.0;
+      final inset = math.min(w, h) / 2;
+      final first = [inset, h / 2];
+      final last = [w - inset, h / 2];
+      expect(first, [40.0, 40.0]);
+      expect(last, [80.0, 40.0]);
+    });
+
+    test('roof with equal dimensions has single inset point', () {
+      final w = 100.0;
+      final h = 100.0;
+      final inset = math.min(w, h) / 2;
+      final first = [inset, h / 2];
+      final last = [w - inset, h / 2];
+      expect(first[0], last[0]);
+      expect(first[1], last[1]);
+    });
+
+    test('tall roof seam uses vertical ridge', () {
+      final w = 60.0;
+      final h = 120.0;
+      final inset = math.min(w, h) / 2;
+      final first = [w / 2, inset];
+      final last = [w / 2, h - inset];
+      expect(first, [30.0, 30.0]);
+      expect(last, [30.0, 90.0]);
+    });
+  });
+
+  group('Campus roof objects not silently skipped', () {
+    test('campus layer contains roof items', () {
+      final json = _minimalSceneWithRoofs();
+      final scene = MapScene.fromJson(json);
+      final campus = scene.floors['Campus'] ?? [];
+      final roofItems = campus.where((i) => roofKinds.contains(i.kind)).toList();
+      expect(roofItems.length, greaterThanOrEqualTo(2));
+    });
+  });
 }
 
 Map<String, dynamic> _buildTestScene() {
@@ -983,6 +1186,52 @@ Map<String, dynamic> _minimalScene() {
           'width': 40,
           'height': 8,
           'blocking': false,
+        },
+      ],
+      'b1:Floor 1': [],
+      'b1:Roof': [],
+    },
+  };
+}
+
+Map<String, dynamic> _minimalSceneWithRoofs() {
+  return {
+    'format': 'bpnhs-map',
+    'name': 'Test',
+    'width': 2000,
+    'height': 1200,
+    'floors': {
+      'Campus': [
+        {
+          'kind': 'building',
+          'id': 'b1',
+          'x': 400,
+          'y': 300,
+          'width': 300,
+          'height': 200,
+          'floor_count': 1,
+        },
+        {
+          'kind': 'gazebo_roof',
+          'id': 'gr1',
+          'x': 800,
+          'y': 200,
+          'width': 60,
+          'height': 60,
+          'fill': '#DDDDDD',
+          'color': '#111111',
+          'stroke': 2,
+        },
+        {
+          'kind': 'court_roof',
+          'id': 'cr1',
+          'x': 100,
+          'y': 100,
+          'width': 150,
+          'height': 100,
+          'fill': '#CCCCCC',
+          'color': '#111111',
+          'stroke': 2,
         },
       ],
       'b1:Floor 1': [],

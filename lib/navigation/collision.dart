@@ -226,6 +226,91 @@ double collisionThickness(MapItem item) {
   return math.max(1, item.stroke);
 }
 
+/// Compute the opening baseline and its reach (half-thickness).
+/// Matches Python opening_axis() from collision.py.
+(List<double>, List<double>, double) openingAxis(MapItem item) {
+  final y = item.kind == 'opening' ? item.height / 2 : item.height;
+  final reach = item.kind == 'opening'
+      ? item.height / 2
+      : math.max(8, item.stroke + 6) / 2;
+  return (item.localToWorld(0, y), item.localToWorld(item.width, y), reach);
+}
+
+/// Spatial index of door/opening baselines for wall-cut lookups.
+/// Matches Python OpeningIndex from collision.py.
+class OpeningIndex {
+  final List<MapItem> openings;
+  final List<(double, double, double, double)> _boxes;
+
+  OpeningIndex._(this.openings, this._boxes);
+
+  factory OpeningIndex(List<MapItem> items) {
+    final openings =
+        items.where((i) => openingKinds.contains(i.kind)).toList();
+    final boxes = <(double, double, double, double)>[];
+    for (final opening in openings) {
+      final (start, end, reach) = openingAxis(opening);
+      boxes.add((
+        math.min(start[0], end[0]) - reach,
+        math.min(start[1], end[1]) - reach,
+        math.max(start[0], end[0]) + reach,
+        math.max(start[1], end[1]) + reach,
+      ));
+    }
+    return OpeningIndex._(openings, boxes);
+  }
+
+  /// Returns openings relevant to the given wall.
+  /// Matches Python OpeningIndex.for_wall().
+  List<MapItem> forWall(MapItem item) {
+    if (!wallKinds.contains(item.kind) || openings.isEmpty) return [];
+    if (item.kind == 'circle_wall') {
+      final points = ellipsePoints(item.width, item.height)
+          .map((p) => item.localToWorld(p[0], p[1]))
+          .toList();
+      final radius = math.max(0.5, item.stroke / 2);
+      final box = (
+        points.map((p) => p[0]).reduce(math.min) - radius,
+        points.map((p) => p[1]).reduce(math.min) - radius,
+        points.map((p) => p[0]).reduce(math.max) + radius,
+        points.map((p) => p[1]).reduce(math.max) + radius,
+      );
+      return _queryBox(box);
+    }
+    final candidateIndices = <int>{};
+    for (final edge in wallEdges(item)) {
+      final edgeBox = (
+        math.min(edge.start[0], edge.end[0]) - edge.radius - 1e-7,
+        math.min(edge.start[1], edge.end[1]) - edge.radius - 1e-7,
+        math.max(edge.start[0], edge.end[0]) + edge.radius + 1e-7,
+        math.max(edge.start[1], edge.end[1]) + edge.radius + 1e-7,
+      );
+      for (var i = 0; i < _boxes.length; i++) {
+        if (_overlaps(edgeBox, _boxes[i])) candidateIndices.add(i);
+      }
+    }
+    final result = <MapItem>[];
+    for (final idx in candidateIndices) {
+      result.add(openings[idx]);
+    }
+    return result;
+  }
+
+  List<MapItem> _queryBox(
+      (double, double, double, double) query) {
+    final result = <MapItem>[];
+    for (var i = 0; i < openings.length; i++) {
+      if (_overlaps(query, _boxes[i])) result.add(openings[i]);
+    }
+    return result;
+  }
+
+  static bool _overlaps(
+      (double, double, double, double) a, (double, double, double, double) b) {
+    return a.$1 <= b.$3 && a.$3 >= b.$1 && a.$2 <= b.$4 && a.$4 >= b.$2;
+  }
+}
+
 List<Barrier> wallSections(MapItem item, {List<MapItem>? openings}) {
   if (item.kind == 'circle_wall') {
     return _circularWallSections(
@@ -325,9 +410,7 @@ List<Barrier> _solidSections(
   final cuts = <(double, double)>[];
   if (openings != null) {
     for (final opening in openings) {
-      final openY = opening.height / 2;
-      final aW = opening.localToWorld(0, openY);
-      final bW = opening.localToWorld(opening.width, openY);
+      final (aW, bW, reach) = openingAxis(opening);
       final ox = bW[0] - aW[0];
       final oy = bW[1] - aW[1];
       final openingLength = helper.hypot(ox, oy);
@@ -335,7 +418,7 @@ List<Barrier> _solidSections(
           (ux * oy - uy * ox).abs() / openingLength > 1e-5) continue;
       final distA = ((aW[0] - start[0]) * uy - (aW[1] - start[1]) * ux).abs();
       final distB = ((bW[0] - start[0]) * uy - (bW[1] - start[1]) * ux).abs();
-      if (math.max(distA, distB) > radius + 8 + 1e-7) continue;
+      if (math.max(distA, distB) > radius + reach + 1e-7) continue;
       final posA = (aW[0] - start[0]) * ux + (aW[1] - start[1]) * uy;
       final posB = (bW[0] - start[0]) * ux + (bW[1] - start[1]) * uy;
       final lo = math.max(0.0, math.min(posA, posB));
@@ -376,16 +459,15 @@ List<Barrier> _solidSections(
 }
 
 const openingKinds = {'door', 'double_door', 'opening'};
-
-List<MapItem> _openingIndex(List<MapItem> items) {
-  return items.where((i) => openingKinds.contains(i.kind)).toList();
-}
+const wallKinds = {'wall', 'room', 'circle_wall'};
+const roofKinds = {'roof', 'gazebo_roof', 'court_roof'};
 
 List<Barrier> barriersFor(List<MapItem> items) {
-  final openings = _openingIndex(items);
+  final index = OpeningIndex(items);
   final result = <Barrier>[];
   for (final item in items) {
-    result.addAll(_barriersForItem(item, openings));
+    final relevant = index.forWall(item);
+    result.addAll(_barriersForItem(item, relevant));
   }
   return result;
 }
