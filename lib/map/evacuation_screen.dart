@@ -22,7 +22,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   DateTime? _lastTime;
 
   double playerSize = 20;
-  double collisionRadius = 26;
+  double get collisionRadius => playerSize / 2;
 
   double joystickX = 0;
   double joystickY = 0;
@@ -239,6 +239,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                   value: playerSize,
                   onChanged: (v) {
                     playerSize = v;
+                    navigator.collisionRadius = collisionRadius;
                     setState(() {});
                   },
                 ),

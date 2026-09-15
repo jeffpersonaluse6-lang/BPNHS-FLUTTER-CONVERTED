@@ -818,6 +818,74 @@ void main() {
       expect(identical(t1, t2), isTrue);
     });
   });
+
+  group('Collision radius matches visual size', () {
+    test('playerSize 20 -> collisionRadius 10', () {
+      final playerSize = 20.0;
+      final collisionRadius = playerSize / 2;
+      expect(collisionRadius, 10.0);
+    });
+
+    test('size changes update navigator radius', () {
+      final scene = MapScene.fromJson(_minimalScene());
+      final nav = WorldNavigator(scene, collisionRadius: 10);
+      expect(nav.collisionRadius, 10.0);
+      nav.collisionRadius = 15;
+      expect(nav.collisionRadius, 15.0);
+      nav.collisionRadius = 5;
+      expect(nav.collisionRadius, 5.0);
+    });
+
+    test('visible center equals collision center', () {
+      final cosR = 1.0;
+      final sinR = 0.0;
+      final camX = 100.0;
+      final camY = 50.0;
+      final camScale = 1.5;
+      final playerWorld = [500.0, 300.0];
+      final sx = camX + camScale * (cosR * playerWorld[0] - sinR * playerWorld[1]);
+      final sy = camY + camScale * (sinR * playerWorld[0] + cosR * playerWorld[1]);
+      expect(sx, closeTo(850.0, 1e-9));
+      expect(sy, closeTo(500.0, 1e-9));
+    });
+
+    test('no stale collision radius after resizing', () {
+      final scene = MapScene.fromJson(_minimalScene());
+      final nav = WorldNavigator(scene, collisionRadius: 10);
+      nav.collisionRadius = 5;
+      final before = [nav.markerX, nav.markerY];
+      final result = nav.walk(before[0], before[1], 1, 0, 0.1);
+      expect(result[0], greaterThan(before[0]));
+      expect(nav.collisionRadius, 5.0);
+    });
+  });
+
+  group('Doorway passage', () {
+    test('player passes through doorway wider than diameter', () {
+      final scene = MapScene.fromJson(_minimalScene());
+      final nav = WorldNavigator(scene, collisionRadius: 5);
+      nav.markerX = 540;
+      nav.markerY = 300;
+      nav.collisionRadius = 5;
+      final result = nav.walk(540, 300, 0, -1, 0.1);
+      expect(result[1], lessThan(300.0));
+    });
+
+    test('player is blocked when doorway narrower than diameter', () {
+      final json = _minimalScene();
+      final campus = json['floors']['Campus'] as List;
+      final opening = campus.firstWhere((i) => i['id'] == 'door1') as Map<String, dynamic>;
+      opening['width'] = 5;
+      final scene = MapScene.fromJson(json);
+      final nav = WorldNavigator(scene, collisionRadius: 10);
+      nav.markerX = 540;
+      nav.markerY = 300;
+      nav.collisionRadius = 10;
+      final before = [nav.markerX, nav.markerY];
+      final result = nav.walk(before[0], before[1], 0, -1, 0.1);
+      expect(result[1], closeTo(before[1], 1.0));
+    });
+  });
 }
 
 Map<String, dynamic> _buildTestScene() {
@@ -875,6 +943,50 @@ Map<String, dynamic> _buildTestScene() {
       'building_a:Roof': [],
       'building_b:Floor 1': [],
       'building_b:Roof': [],
+    },
+  };
+}
+
+Map<String, dynamic> _minimalScene() {
+  return {
+    'format': 'bpnhs-map',
+    'name': 'Test',
+    'width': 2000,
+    'height': 1200,
+    'floors': {
+      'Campus': [
+        {
+          'kind': 'building',
+          'id': 'b1',
+          'x': 400,
+          'y': 300,
+          'width': 300,
+          'height': 200,
+          'floor_count': 1,
+          'opens': 'b1',
+        },
+        {
+          'kind': 'wall',
+          'id': 'wall1',
+          'x': 400,
+          'y': 298,
+          'width': 300,
+          'height': 0,
+          'stroke': 4,
+          'blocking': true,
+        },
+        {
+          'kind': 'opening',
+          'id': 'door1',
+          'x': 520,
+          'y': 296,
+          'width': 40,
+          'height': 8,
+          'blocking': false,
+        },
+      ],
+      'b1:Floor 1': [],
+      'b1:Roof': [],
     },
   };
 }

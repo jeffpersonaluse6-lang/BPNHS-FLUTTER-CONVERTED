@@ -32,7 +32,7 @@ class MapPainter extends CustomPainter {
     this.cameraRotation = 0,
     required this.playerCenter,
     this.playerSize = 20,
-    this.collisionRadius = 26,
+    this.collisionRadius = 10,
   });
 
   FloorTransform? _ft;
@@ -772,6 +772,7 @@ class MapPainter extends CustomPainter {
         oldDelegate.cameraRotation != cameraRotation ||
         oldDelegate.playerCenter[0] != playerCenter[0] ||
         oldDelegate.playerCenter[1] != playerCenter[1] ||
-        oldDelegate.playerSize != playerSize;
+        oldDelegate.playerSize != playerSize ||
+        oldDelegate.collisionRadius != collisionRadius;
   }
 }
