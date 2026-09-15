@@ -37,6 +37,7 @@ class MapPainter extends CustomPainter {
 
   FloorTransform? _ft;
   double _scale = 1;
+  double _layerOpacity = 1;
 
   List<double> _wx(double lx, double ly, MapItem item) {
     final world = item.localToWorld(lx, ly);
@@ -64,6 +65,7 @@ class MapPainter extends CustomPainter {
       if (roofKinds.contains(item.kind)) continue;
       _ft = null;
       _scale = 1;
+      _layerOpacity = 1;
       _renderItem(canvas, item, campusOpenings);
     }
 
@@ -116,6 +118,7 @@ class MapPainter extends CustomPainter {
         if (item.kind == 'entry_zone') continue;
         _ft = ft;
         _scale = bscale;
+        _layerOpacity = opacity;
         _renderItem(canvas, item, openings);
       }
     }
@@ -127,29 +130,35 @@ class MapPainter extends CustomPainter {
       for (final item in roofItems) {
         _ft = ft;
         _scale = bscale;
+        _layerOpacity = roofOp;
         _renderItem(canvas, item, roofOpenings);
       }
     }
   }
 
   void _drawPlayer(Canvas canvas, Size size) {
+    final cosR = math.cos(cameraRotation);
+    final sinR = math.sin(cameraRotation);
+    final sx = cameraX +
+        cameraScale * (cosR * playerCenter[0] - sinR * playerCenter[1]);
+    final sy = cameraY +
+        cameraScale * (sinR * playerCenter[0] + cosR * playerCenter[1]);
+    final center = Offset(sx, sy);
+
     final paint = Paint();
     paint
       ..color = const Color(0x1606B6D4)
       ..style = PaintingStyle.fill;
-    canvas.drawCircle(
-        Offset(size.width / 2, size.height / 2), collisionRadius, paint);
+    canvas.drawCircle(center, collisionRadius, paint);
     paint
       ..color = const Color(0xFF06B6D4)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
-    canvas.drawCircle(
-        Offset(size.width / 2, size.height / 2), collisionRadius, paint);
+    canvas.drawCircle(center, collisionRadius, paint);
     paint
       ..color = const Color(0xFF155EEF)
       ..style = PaintingStyle.fill;
-    canvas.drawCircle(
-        Offset(size.width / 2, size.height / 2), playerSize / 2, paint);
+    canvas.drawCircle(center, playerSize / 2, paint);
   }
 
   (double, double) _floorScale(MapItem? parent) {
@@ -167,8 +176,7 @@ class MapPainter extends CustomPainter {
 
   void _renderItem(Canvas canvas, MapItem item, List<MapItem> openings) {
     final paint = Paint();
-    final opacity = 1.0;
-    paint.color = _parseColor(item.color).withValues(alpha: opacity * item.opacity);
+    paint.color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
 
     switch (item.kind) {
       case 'wall':
@@ -212,7 +220,7 @@ class MapPainter extends CustomPainter {
     final sections = wallSections(item, openings: openings);
     paint
       ..style = PaintingStyle.fill
-      ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+      ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     for (final section in sections) {
       final polygon = wallPolygon(section);
       if (polygon.isEmpty) continue;
@@ -236,7 +244,7 @@ class MapPainter extends CustomPainter {
       final p3 = _wx(0, item.height, item);
       paint
         ..style = PaintingStyle.fill
-        ..color = _parseColor(item.fill).withValues(alpha: item.opacity);
+        ..color = _parseColor(item.fill).withValues(alpha: _layerOpacity * item.opacity);
       canvas.drawPath(
           Path()
             ..moveTo(p0[0], p0[1])
@@ -251,7 +259,7 @@ class MapPainter extends CustomPainter {
       final sections = wallSections(item, openings: openings);
       paint
         ..style = PaintingStyle.fill
-        ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+        ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
       for (final section in sections) {
         final polygon = wallPolygon(section);
         if (polygon.isEmpty) continue;
@@ -295,7 +303,7 @@ class MapPainter extends CustomPainter {
       path.close();
       paint
         ..style = PaintingStyle.fill
-        ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+        ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
       canvas.drawPath(path, paint);
     }
   }
@@ -311,7 +319,7 @@ class MapPainter extends CustomPainter {
 
     paint
       ..style = PaintingStyle.stroke
-      ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+      ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     for (final sign in [-1.0, 1.0]) {
       paint.strokeWidth = railWidth * _scale;
       final a = _wx(sign * nx * gap, sign * ny * gap, item);
@@ -337,7 +345,7 @@ class MapPainter extends CustomPainter {
     final p3 = _wx(0, item.height, item);
     paint
       ..style = PaintingStyle.fill
-      ..color = Colors.white.withValues(alpha: item.opacity);
+      ..color = Colors.white.withValues(alpha: _layerOpacity * item.opacity);
     canvas.drawPath(
         Path()
           ..moveTo(p0[0], p0[1])
@@ -352,7 +360,7 @@ class MapPainter extends CustomPainter {
           ? (1 - i / math.max(1, item.steps - 1))
           : i / math.max(1, item.steps - 1);
       final shade = (248 - 62 * depth).round().clamp(0, 255);
-      paint.color = Color.fromRGBO(shade, shade, shade, item.opacity);
+      paint.color = Color.fromRGBO(shade, shade, shade, _layerOpacity * item.opacity);
 
       final ty = item.height * i / item.steps;
       final ty2 = item.height * (i + 1) / item.steps;
@@ -373,7 +381,7 @@ class MapPainter extends CustomPainter {
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = math.max(0.5, item.stroke * 0.5) * _scale
-      ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+      ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     for (var i = 1; i < item.steps; i++) {
       final y = item.height * i / item.steps;
       final la = _wx(0, y, item);
@@ -388,13 +396,13 @@ class MapPainter extends CustomPainter {
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = math.max(8, item.stroke + 6) * _scale
-      ..color = Colors.white.withValues(alpha: item.opacity);
+      ..color = Colors.white.withValues(alpha: _layerOpacity * item.opacity);
     canvas.drawLine(Offset(a[0], a[1]), Offset(b[0], b[1]), paint);
 
     final c = _wx(0, 0, item);
     paint
       ..strokeWidth = item.stroke * _scale
-      ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+      ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     canvas.drawLine(Offset(a[0], a[1]), Offset(c[0], c[1]), paint);
 
     final arcPath = Path()..moveTo(a[0], a[1]);
@@ -427,13 +435,13 @@ class MapPainter extends CustomPainter {
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = math.max(8, item.stroke + 6) * _scale
-      ..color = Colors.white.withValues(alpha: item.opacity);
+      ..color = Colors.white.withValues(alpha: _layerOpacity * item.opacity);
     canvas.drawLine(Offset(a[0], a[1]), Offset(b[0], b[1]), paint);
 
     final c = _wx(hinge, 0, item);
     paint
       ..strokeWidth = item.stroke * _scale
-      ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+      ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     canvas.drawLine(Offset(a[0], a[1]), Offset(c[0], c[1]), paint);
 
     final arcPath = Path()..moveTo(a[0], a[1]);
@@ -456,7 +464,7 @@ class MapPainter extends CustomPainter {
     final p3 = _wx(0, item.height, item);
     paint
       ..style = PaintingStyle.fill
-      ..color = Colors.white.withValues(alpha: item.opacity);
+      ..color = Colors.white.withValues(alpha: _layerOpacity * item.opacity);
     canvas.drawPath(
         Path()
           ..moveTo(p0[0], p0[1])
@@ -474,7 +482,7 @@ class MapPainter extends CustomPainter {
     final p3 = _wx(0, item.height, item);
     paint
       ..style = PaintingStyle.fill
-      ..color = Colors.white.withValues(alpha: item.opacity);
+      ..color = Colors.white.withValues(alpha: _layerOpacity * item.opacity);
     canvas.drawPath(
         Path()
           ..moveTo(p0[0], p0[1])
@@ -489,12 +497,12 @@ class MapPainter extends CustomPainter {
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = item.stroke * _scale
-      ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+      ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     canvas.drawLine(Offset(midA[0], midA[1]), Offset(midB[0], midB[1]), paint);
   }
 
   void _renderGate(Canvas canvas, MapItem item, Paint paint) {
-    final color = _parseColor(item.color).withValues(alpha: item.opacity);
+    final color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     final post = math.max(6.0, math.min(18.0, item.width * 0.07));
     final h = item.height;
     final w = item.width;
@@ -553,7 +561,7 @@ class MapPainter extends CustomPainter {
   void _renderGazeboRoof(Canvas canvas, MapItem item, Paint paint) {
     final w = item.width;
     final h = item.height;
-    final fillColor = _parseColor(item.fill).withValues(alpha: item.opacity);
+    final fillColor = _parseColor(item.fill).withValues(alpha: _layerOpacity * item.opacity);
 
     paint
       ..style = PaintingStyle.fill
@@ -573,12 +581,12 @@ class MapPainter extends CustomPainter {
     }
 
     _drawEllipse(canvas, item, w, h, paint,
-        _parseColor(item.color).withValues(alpha: item.opacity));
+        _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity));
 
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = item.stroke * _scale
-      ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+      ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     for (var n = 0; n < 8; n++) {
       final a = n * math.pi / 4;
       _drawLine(item, w / 2, h / 2, w / 2 + w / 2 * math.cos(a),
@@ -615,7 +623,7 @@ class MapPainter extends CustomPainter {
       dotPath.close();
       paint
         ..style = PaintingStyle.fill
-        ..color = _parseColor(item.fill).withValues(alpha: item.opacity);
+        ..color = _parseColor(item.fill).withValues(alpha: _layerOpacity * item.opacity);
       canvas.drawPath(dotPath, paint);
     }
   }
@@ -623,14 +631,14 @@ class MapPainter extends CustomPainter {
   void _renderCourtRoof(Canvas canvas, MapItem item, Paint paint) {
     final w = item.width;
     final h = item.height;
-    final fillColor = _parseColor(item.fill).withValues(alpha: item.opacity);
+    final fillColor = _parseColor(item.fill).withValues(alpha: _layerOpacity * item.opacity);
 
     paint
       ..style = PaintingStyle.fill
       ..color = fillColor;
     canvas.drawPath(_quad(item, 0, 0, w, 0, w, h, 0, h), paint);
 
-    final color = _parseColor(item.color).withValues(alpha: item.opacity);
+    final color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     final horizontal = w >= h;
     final count = math.max(4, math.min(80, (horizontal ? w : h) / 48).ceil().toDouble());
     paint
@@ -684,7 +692,7 @@ class MapPainter extends CustomPainter {
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = item.stroke * _scale
-      ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+      ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     for (final corner in corners) {
       final target = corner[0] < item.width / 2 ? first : last;
       _drawLine(item, corner[0], corner[1], target[0], target[1], canvas, paint);
@@ -710,14 +718,14 @@ class MapPainter extends CustomPainter {
     if (item.fill != 'none') {
       paint
         ..style = PaintingStyle.fill
-        ..color = _parseColor(item.fill).withValues(alpha: item.opacity);
+        ..color = _parseColor(item.fill).withValues(alpha: _layerOpacity * item.opacity);
       canvas.drawPath(path, paint);
     }
 
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = item.stroke * _scale
-      ..color = _parseColor(item.color).withValues(alpha: item.opacity);
+      ..color = _parseColor(item.color).withValues(alpha: _layerOpacity * item.opacity);
     canvas.drawPath(path, paint);
   }
 

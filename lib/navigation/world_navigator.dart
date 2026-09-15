@@ -52,6 +52,7 @@ class WorldNavigator {
   final Map<String, List<MapItem>> _stairObjects = {};
   final Map<String, RuntimeIndex<StairSection>> _stairIndices = {};
   final Map<String, List<PolygonBarrier>> _roofAreas = {};
+  final Map<String, List<PolygonBarrier>> _entryAreas = {};
   final Map<String, FloorTransform> _transforms = {};
 
   final Map<String, (List<Barrier>, (double, double, double, double))>
@@ -89,19 +90,83 @@ class WorldNavigator {
       final transform = FloorTransform.build(parent);
       _transforms[parent.id] = transform;
 
-      final footprint = PolygonBarrier([
-        [parent.x, parent.y],
-        [parent.x + parent.width, parent.y],
-        [parent.x + parent.width, parent.y + parent.height],
-        [parent.x, parent.y + parent.height],
-      ]);
-      _roofAreas[parent.id] = [footprint];
-      parentBoxes.add(_parentBoundingBox(parent));
+      final fw = parent.floorWidth ?? 1436;
+      final fh = parent.floorHeight ?? 751;
+      final bscale = math.min(parent.width / fw, parent.height / fh);
+
+      final footprintPoints = <List<double>>[];
+      for (final (lx, ly) in [
+        (0.0, 0.0),
+        (parent.width, 0.0),
+        (parent.width, parent.height),
+        (0.0, parent.height)
+      ]) {
+        footprintPoints.add(parent.localToWorld(lx, ly));
+      }
+      final footprint = PolygonBarrier(footprintPoints);
+
+      final campusItems = scene.floors[campus] ?? [];
+      final campusZones = campusItems
+          .where((i) => i.kind == 'entry_zone' && i.parentId == parent.id)
+          .toList();
+      final floor1Items = scene.floorItems(parent.id, 1);
+      final floor1Zones =
+          floor1Items.where((i) => i.kind == 'entry_zone').toList();
+
+      final entryAreaList = <PolygonBarrier>[footprint];
+      final roofAreaList = <PolygonBarrier>[];
+
+      for (final zone in campusZones) {
+        final points = <List<double>>[];
+        for (final (lx, ly) in [
+          (0.0, 0.0),
+          (zone.width, 0.0),
+          (zone.width, zone.height),
+          (0.0, zone.height)
+        ]) {
+          points.add(zone.localToWorld(lx, ly));
+        }
+        final area = PolygonBarrier(points);
+        entryAreaList.add(area);
+        roofAreaList.add(area);
+      }
+
+      for (final zone in floor1Zones) {
+        final points = <List<double>>[];
+        for (final (lx, ly) in [
+          (0.0, 0.0),
+          (zone.width, 0.0),
+          (zone.width, zone.height),
+          (0.0, zone.height)
+        ]) {
+          final w = zone.localToWorld(lx, ly);
+          points.add(transform.project(w[0], w[1]));
+        }
+        final area = PolygonBarrier(points);
+        entryAreaList.add(area);
+        roofAreaList.add(area);
+      }
+
+      _entryAreas[parent.id] = entryAreaList;
+      _roofAreas[parent.id] = roofAreaList.isNotEmpty ? roofAreaList : [footprint];
+
+      double minX = double.infinity,
+          minY = double.infinity,
+          maxX = double.negativeInfinity,
+          maxY = double.negativeInfinity;
+      for (final area in entryAreaList) {
+        final b = area.box;
+        if (b.$1 < minX) minX = b.$1;
+        if (b.$2 < minY) minY = b.$2;
+        if (b.$3 > maxX) maxX = b.$3;
+        if (b.$4 > maxY) maxY = b.$4;
+      }
+      parentBoxes.add((minX, minY, maxX, maxY));
       roofBoxes.add((
-        parent.x - parent.approachDistance,
-        parent.y - parent.approachDistance,
-        parent.x + parent.width + parent.approachDistance,
-        parent.y + parent.height + parent.approachDistance,
+        minX - parent.approachDistance,
+        minY - parent.approachDistance,
+        maxX + parent.approachDistance,
+        maxY + parent.approachDistance,
       ));
 
       for (var floor = 1; floor <= parent.floorCount; floor++) {
@@ -114,7 +179,7 @@ class WorldNavigator {
           stairSections.addAll(transitions(stair, floor, parent.floorCount));
         }
         _stairObjects[key] = stairItems;
-        _stairIndices[key] = _buildStairIndex(stairSections);
+        _stairIndices[key] = _buildStairIndex(stairSections, parent);
 
         final conns = <StairSection>[];
         for (final stair in stairItems) {
@@ -124,9 +189,21 @@ class WorldNavigator {
         for (final s in conns) {
           _sectionsById[s.id] = s;
         }
-        _sectionIndices[key] = _buildSectionIndex(conns);
+        _sectionIndices[key] = _buildSectionIndex(conns, parent);
 
-        final barriers = barriersFor(items);
+        final rawBarriers = barriersFor(items);
+        final barriers = rawBarriers.map((b) {
+          final s = transform.project(b.startX, b.startY);
+          final e = transform.project(b.endX, b.endY);
+          return Barrier(
+            startX: s[0],
+            startY: s[1],
+            endX: e[0],
+            endY: e[1],
+            radius: b.radius * bscale,
+            flat: b.flat,
+          );
+        }).toList();
         final box = barrierBounds(barriers);
         _colliders[key] = (barriers, box ?? (0, 0, 0, 0));
         _collisionIndices[key] = _buildCollisionIndex(barriers);
@@ -147,21 +224,17 @@ class WorldNavigator {
     return _transforms[building.id] ?? FloorTransform.build(building);
   }
 
-  (double, double, double, double) _parentBoundingBox(MapItem parent) {
-    return (parent.x, parent.y, parent.x + parent.width, parent.y + parent.height);
-  }
-
-  RuntimeIndex<StairSection> _buildStairIndex(List<StairSection> stairs) {
+  RuntimeIndex<StairSection> _buildStairIndex(List<StairSection> stairs, MapItem building) {
     final boxes = stairs.map((s) {
-      final area = _buildArea(s.stair, s.source);
+      final area = _buildArea(s.stair, s.source, building);
       return area.box;
     }).toList();
     return RuntimeIndex(stairs, boxes);
   }
 
-  RuntimeIndex<StairSection> _buildSectionIndex(List<StairSection> zones) {
+  RuntimeIndex<StairSection> _buildSectionIndex(List<StairSection> zones, MapItem building) {
     final boxes = zones.map((z) {
-      final area = _buildArea(z.stair, z.source);
+      final area = _buildArea(z.stair, z.source, building);
       return area.box;
     }).toList();
     return RuntimeIndex(zones, boxes);
@@ -172,18 +245,26 @@ class WorldNavigator {
     return RuntimeIndex(barriers, boxes);
   }
 
-  PolygonBarrier _buildArea(MapItem item, int floor) {
+  PolygonBarrier _buildArea(MapItem item, int floor, [MapItem? building]) {
+    final bldg = building ?? parent;
+    if (bldg == null) return PolygonBarrier([]);
+    final transform = _transforms[bldg.id] ?? FloorTransform.build(bldg);
     final points = <List<double>>[];
-    for (final (lx, ly) in [(0.0, 0.0), (item.width, 0.0),
-        (item.width, item.height), (0.0, item.height)]) {
+    for (final (lx, ly) in [
+      (0.0, 0.0),
+      (item.width, 0.0),
+      (item.width, item.height),
+      (0.0, item.height)
+    ]) {
       final w = item.localToWorld(lx, ly);
-      points.add([w[0], w[1]]);
+      final projected = transform.project(w[0], w[1]);
+      points.add(projected);
     }
     return PolygonBarrier(points);
   }
 
   bool inside(MapItem parent, double px, double py) {
-    final areas = _roofAreas[parent.id];
+    final areas = _entryAreas[parent.id];
     if (areas == null) return false;
     return areas.any((area) => area.blocks(px, py, 1e-6));
   }
@@ -518,7 +599,7 @@ class WorldNavigator {
   }
 
   void _waitForStairExit(FloorTransition completed) {
-    final sourceArea = _buildArea(completed.section.stair, completed.source);
+    final sourceArea = _buildArea(completed.section.stair, completed.source, parent);
     exitAreas = [sourceArea];
     waitFloor = currentFloor;
     phase = TransitionPhase.arrived;

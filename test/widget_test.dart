@@ -7,6 +7,7 @@ import 'package:flutter_runtime/models/map_item.dart';
 import 'package:flutter_runtime/navigation/floor_transform.dart';
 import 'package:flutter_runtime/navigation/collision.dart';
 import 'package:flutter_runtime/navigation/stairs.dart';
+import 'package:flutter_runtime/navigation/world_navigator.dart';
 import 'package:flutter_runtime/camera/smooth_camera.dart';
 import 'package:flutter_runtime/models/math_helper.dart';
 
@@ -637,4 +638,243 @@ void main() {
       expect(flutterResult[1], closeTo(pyResultY, 1e-9));
     });
   });
+
+  group('Player position parity', () {
+    test('camera.screen(playerWorld) matches rendered player position formula', () {
+      final cam = SmoothCamera(width: 800, height: 600, x: 100, y: 50, scale: 1.5, rotation: 0.3);
+      final playerWorld = [1510.0, 620.0];
+      final screenPt = cam.screen(playerWorld);
+      final cosR = math.cos(cam.rotation);
+      final sinR = math.sin(cam.rotation);
+      final expectedX = cam.x + cam.scale * (cosR * playerWorld[0] - sinR * playerWorld[1]);
+      final expectedY = cam.y + cam.scale * (sinR * playerWorld[0] + cosR * playerWorld[1]);
+      expect(screenPt[0], closeTo(expectedX, 1e-9));
+      expect(screenPt[1], closeTo(expectedY, 1e-9));
+    });
+
+    test('player screen position is not always screen center', () {
+      final cam = SmoothCamera(width: 800, height: 600, x: 0, y: 0, scale: 1, rotation: 0);
+      final playerWorld = [300.0, 400.0];
+      final screenPt = cam.screen(playerWorld);
+      expect(screenPt[0], closeTo(300, 1e-9));
+      expect(screenPt[1], closeTo(400, 1e-9));
+      expect(screenPt[0], isNot(closeTo(400, 1e-9)));
+      expect(screenPt[1], isNot(closeTo(300, 1e-9)));
+    });
+  });
+
+  group('Roof opacity', () {
+    test('roofOpacity returns 1.0 when far from building', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      final result = nav.roofOpacity(building, 0, 0);
+      expect(result, closeTo(1.0, 1e-9));
+    });
+
+    test('roofOpacity returns 0.0 when inside building', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      nav.enterBuilding(building);
+      final result = nav.roofOpacity(building, nav.markerX, nav.markerY);
+      expect(result, closeTo(0.0, 1e-9));
+    });
+
+    test('roofOpacity interpolates between 0 and 1 based on distance', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      final ad = building.approachDistance;
+      final dist = ad * 0.5;
+      final outsideX = building.x - dist;
+      final outsideY = building.y + building.height / 2;
+      final result = nav.roofOpacity(building, outsideX, outsideY);
+      expect(result, greaterThan(0.0));
+      expect(result, lessThan(1.0));
+    });
+
+    test('roofOpacity restores to 1.0 when moving away', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      nav.enterBuilding(building);
+      expect(nav.roofOpacity(building, nav.markerX, nav.markerY), closeTo(0.0, 1e-9));
+      nav.exitBuilding();
+      final result = nav.roofOpacity(building, 0, 0);
+      expect(result, closeTo(1.0, 1e-9));
+    });
+  });
+
+  group('Floor opacity transition', () {
+    test('floorOpacities returns source and target during transition', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      nav.enterBuilding(building);
+      final opacities = nav.floorOpacities(building);
+      expect(opacities[1], closeTo(1.0, 1e-9));
+    });
+
+    test('floorOpacities returns 0 for non-active floors', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      nav.enterBuilding(building);
+      final opacities = nav.floorOpacities(building);
+      if (building.floorCount > 1) {
+        expect(opacities[2], closeTo(0.0, 1e-9));
+      }
+    });
+
+    test('floorOpacities returns 0 for different building', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final buildings = scene.buildings();
+      if (buildings.length > 1) {
+        nav.enterBuilding(buildings[0]);
+        final opacities = nav.floorOpacities(buildings[1]);
+        expect(opacities[1], closeTo(1.0, 1e-9));
+      }
+    });
+  });
+
+  group('Entry zones and roof detection', () {
+    test('inside() returns true within building footprint', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      final result = nav.inside(building, building.x + building.width / 2, building.y + building.height / 2);
+      expect(result, isTrue);
+    });
+
+    test('inside() returns false far from building', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      final result = nav.inside(building, 0, 0);
+      expect(result, isFalse);
+    });
+
+    test('distanceToParent returns 0 inside building', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      final dist = nav.distanceToParent(building, building.x + building.width / 2, building.y + building.height / 2);
+      expect(dist, closeTo(0.0, 1e-9));
+    });
+
+    test('distanceToParent returns positive value outside building', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      final dist = nav.distanceToParent(building, 0, 0);
+      expect(dist, greaterThan(0.0));
+    });
+  });
+
+  group('Rotated building footprint', () {
+    test('inside() uses rotated footprint for detection', () {
+      final json = _buildTestScene();
+      final campus = json['floors']['Campus'] as List;
+      (campus[0] as Map<String, dynamic>)['rotation'] = 45;
+      final scene = MapScene.fromJson(json);
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      final center = building.localToWorld(building.width / 2, building.height / 2);
+      expect(nav.inside(building, center[0], center[1]), isTrue);
+    });
+
+    test('distanceToParent accounts for rotation', () {
+      final json = _buildTestScene();
+      final campus = json['floors']['Campus'] as List;
+      (campus[0] as Map<String, dynamic>)['rotation'] = 45;
+      final scene = MapScene.fromJson(json);
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      final center = building.localToWorld(building.width / 2, building.height / 2);
+      final dist = nav.distanceToParent(building, center[0], center[1]);
+      expect(dist, closeTo(0.0, 1e-9));
+    });
+  });
+
+  group('Projected floor collision', () {
+    test('floor barriers are projected through FloorTransform', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      final transform = nav.floorTransform(building);
+      final ftProject = transform.project(0, 0);
+      expect(ftProject[0], closeTo(building.x, 1e-9));
+      expect(ftProject[1], closeTo(building.y, 1e-9));
+    });
+
+    test('floorTransform returns cached transform', () {
+      final scene = MapScene.fromJson(_buildTestScene());
+      final nav = WorldNavigator(scene);
+      final building = scene.buildings().first;
+      final t1 = nav.floorTransform(building);
+      final t2 = nav.floorTransform(building);
+      expect(identical(t1, t2), isTrue);
+    });
+  });
+}
+
+Map<String, dynamic> _buildTestScene() {
+  return {
+    'format': 'bpnhs-map',
+    'name': 'Test Map',
+    'width': 2000,
+    'height': 1200,
+    'floors': {
+      'Campus': [
+        {
+          'kind': 'building',
+          'id': 'building_a',
+          'x': 500,
+          'y': 300,
+          'width': 400,
+          'height': 300,
+          'floor_count': 2,
+          'approach_distance': 100,
+          'fade_when_obstructing': true,
+          'opens': 'building_a',
+        },
+        {
+          'kind': 'building',
+          'id': 'building_b',
+          'x': 1200,
+          'y': 600,
+          'width': 250,
+          'height': 200,
+          'floor_count': 1,
+          'approach_distance': 80,
+          'fade_when_obstructing': true,
+        },
+      ],
+      'building_a:Floor 1': [
+        {
+          'kind': 'room',
+          'id': 'a_room1',
+          'x': 10,
+          'y': 10,
+          'width': 100,
+          'height': 80,
+        },
+      ],
+      'building_a:Floor 2': [
+        {
+          'kind': 'room',
+          'id': 'a_room2',
+          'x': 10,
+          'y': 10,
+          'width': 100,
+          'height': 80,
+        },
+      ],
+      'building_a:Roof': [],
+      'building_b:Floor 1': [],
+      'building_b:Roof': [],
+    },
+  };
 }

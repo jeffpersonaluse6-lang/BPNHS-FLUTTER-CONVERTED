@@ -28,7 +28,6 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   double joystickY = 0;
   bool moveMode = false;
   bool followActive = false;
-  final Set<String> fadedRoofs = {};
 
   static const double joystickBaseSize = 148;
   static const double joystickKnobSize = 56;
@@ -90,78 +89,76 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        camera.width = constraints.maxWidth;
-        camera.height = constraints.maxHeight;
-        _updateRoofFading();
+    String status =
+        'Walking on campus. Walk through a building doorway to enter.';
+    String subtitle = 'Campus overview';
+    if (navigator.parent != null) {
+      subtitle =
+          '${navigator.parent!.text} - Floor ${navigator.currentFloor}';
+      status = subtitle;
+      if (navigator.transition != null) {
+        final t = navigator.transition!;
+        status =
+            '${navigator.parent!.text} · Floor ${t.source} → ${t.target} · stairs ${(t.progress * 100).toStringAsFixed(0)}%';
+      }
+    }
 
-        String status =
-            'Walking on campus. Walk through a building doorway to enter.';
-        String subtitle = 'Campus overview';
-        if (navigator.parent != null) {
-          subtitle =
-              '${navigator.parent!.text} - Floor ${navigator.currentFloor}';
-          status = subtitle;
-          if (navigator.transition != null) {
-            final t = navigator.transition!;
-            status =
-                '${navigator.parent!.text} · Floor ${t.source} → ${t.target} · stairs ${(t.progress * 100).toStringAsFixed(0)}%';
-          }
-        }
-
-        return Scaffold(
-          backgroundColor: const Color(0xFFF5F7FB),
-          body: Column(
-            children: [
-              _buildHeader(),
-              _buildActionBar(subtitle, status),
-              Expanded(
-                child: Stack(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Container(
-                          color: const Color(0xFFD5DEE8),
-                          child: GestureDetector(
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F7FB),
+      body: Column(
+        children: [
+          _buildHeader(),
+          _buildActionBar(subtitle, status),
+          Expanded(
+            child: Stack(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      color: const Color(0xFFD5DEE8),
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          camera.width = constraints.maxWidth;
+                          camera.height = constraints.maxHeight;
+                          return GestureDetector(
                             onScaleStart: _onScaleStart,
                             onScaleUpdate: _onScaleUpdate,
-                    child: CustomPaint(
-                      painter: MapPainter(
-                        scene: widget.scene,
-                        navigator: navigator,
-                        cameraX: camera.x,
-                        cameraY: camera.y,
-                        cameraScale: camera.scale,
-                        cameraRotation: camera.rotation,
-                        playerCenter: [
-                          navigator.markerX,
-                          navigator.markerY,
-                        ],
-                        playerSize: playerSize,
-                        collisionRadius: collisionRadius,
-                      ),
+                            child: CustomPaint(
+                              painter: MapPainter(
+                                scene: widget.scene,
+                                navigator: navigator,
+                                cameraX: camera.x,
+                                cameraY: camera.y,
+                                cameraScale: camera.scale,
+                                cameraRotation: camera.rotation,
+                                playerCenter: [
+                                  navigator.markerX,
+                                  navigator.markerY,
+                                ],
+                                playerSize: playerSize,
+                                collisionRadius: collisionRadius,
+                              ),
                               size: Size.infinite,
                             ),
-                          ),
-                        ),
+                          );
+                        },
                       ),
                     ),
-                    if (moveMode)
-                      Positioned(
-                        right: 30,
-                        bottom: 30,
-                        child: _buildJoystick(),
-                      ),
-                  ],
+                  ),
                 ),
-              ),
-            ],
+                if (moveMode)
+                  Positioned(
+                    right: 30,
+                    bottom: 30,
+                    child: _buildJoystick(),
+                  ),
+              ],
+            ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 
@@ -401,14 +398,4 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     setState(() {});
   }
 
-  void _updateRoofFading() {
-    fadedRoofs.clear();
-    if (navigator.parent == null) {
-      for (final building in widget.scene.buildings()) {
-        final opacity = navigator.roofOpacity(
-            building, navigator.markerX, navigator.markerY);
-        if (opacity < 1) fadedRoofs.add(building.id);
-      }
-    }
-  }
 }
