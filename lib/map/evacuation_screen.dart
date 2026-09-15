@@ -36,6 +36,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   String? routeStatus;
   String? routeBuildingId;
   int? routeFloor;
+  int? routeTargetFloor;
+  bool _stairTurnaroundActive = false;
   double _routeRefreshElapsed = 0;
 
   static const double joystickBaseSize = 148;
@@ -265,9 +267,24 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             ],
           ),
           const SizedBox(width: 16),
+          if (navigator.parent != null && navigator.currentFloor > 1) ...[
+            ElevatedButton.icon(
+              onPressed: _startRouteToFloorOne,
+              icon: const Icon(Icons.stairs),
+              label: Text(routeTargetFloor == 1 ? 'Routing to F1' : 'To Floor 1'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: routeTargetFloor == 1
+                    ? const Color(0xFFD9E8FF)
+                    : Colors.white,
+                foregroundColor: const Color(0xFF12345A),
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
           ElevatedButton.icon(
             onPressed: () {
               setState(() {
+                routeTargetFloor = null;
                 routeSelectionMode = !routeSelectionMode;
                 if (routeSelectionMode) {
                   moveMode = false;
@@ -433,14 +450,162 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     joystickKnobPosition = Offset(center, center);
   }
 
-  void _updateLiveRoute(double dt) {
-    if (routePoints.length < 2) return;
+  void _startRouteToFloorOne() {
+    final building = navigator.parent;
+    if (building == null || navigator.currentFloor <= 1) return;
 
+    setState(() {
+      routeSelectionMode = false;
+      routeTargetFloor = 1;
+      _stairTurnaroundActive = false;
+      routeBuildingId = building.id;
+      routeFloor = navigator.currentFloor;
+      _routeRefreshElapsed = 0;
+      _refreshMultiFloorLeg();
+    });
+  }
+
+  void _refreshMultiFloorLeg() {
+    final targetFloor = routeTargetFloor;
+    final building = navigator.parent;
+    if (targetFloor == null || building == null) return;
+
+    if (routeBuildingId != building.id) {
+      routePoints = const [];
+      routeStatus = 'Multi-floor route cancelled';
+      routeTargetFloor = null;
+      routeBuildingId = null;
+      routeFloor = null;
+      return;
+    }
+
+    if (navigator.transition != null) {
+      routePoints = const [];
+      routeFloor = navigator.currentFloor;
+      routeStatus =
+          'On stairs to Floor ${navigator.transition!.target}';
+      return;
+    }
+
+    if (navigator.currentFloor == targetFloor) {
+      routePoints = const [];
+      routeFloor = navigator.currentFloor;
+      routeTargetFloor = null;
+      routeStatus = 'Reached Floor $targetFloor';
+      return;
+    }
+
+    final leg = navigator.findRouteTowardFloor(targetFloor);
+    if (leg == null) {
+      routePoints = const [];
+      routeFloor = navigator.currentFloor;
+      routeStatus =
+          'No stair route from Floor ${navigator.currentFloor} to Floor $targetFloor';
+      return;
+    }
+
+    routePoints = leg.path;
+    routeFloor = navigator.currentFloor;
+    _routeRefreshElapsed = 0;
+    routeStatus =
+        'Go to stairs: Floor ${leg.sourceFloor} → ${leg.targetFloor}';
+  }
+
+  void _updateLiveRoute(double dt) {
     final currentBuildingId = navigator.parent?.id;
 
-    // Stage 2 is intentionally same-surface only. If the player changes
-    // building/floor or starts a stair transition, keep the behavior safe and
-    // wait for the multi-floor routing stage instead of drawing a false route.
+    if (routeTargetFloor != null) {
+      if (currentBuildingId == null ||
+          currentBuildingId != routeBuildingId) {
+        routePoints = const [];
+        routeTargetFloor = null;
+        routeBuildingId = null;
+        routeFloor = null;
+        routeStatus = 'Multi-floor route cancelled';
+        return;
+      }
+
+      if (navigator.transition != null) {
+        routePoints = navigator.activeStairRouteGuide();
+        routeFloor = navigator.currentFloor;
+        routeStatus =
+            'On stairs to Floor ${navigator.transition!.target}';
+        return;
+      }
+
+      if (navigator.currentFloor == routeTargetFloor) {
+        final reached = routeTargetFloor!;
+        routePoints = const [];
+        routeTargetFloor = null;
+        _stairTurnaroundActive = false;
+        routeFloor = navigator.currentFloor;
+        routeStatus = 'Reached Floor $reached';
+        return;
+      }
+
+      if (routeFloor != navigator.currentFloor) {
+        _stairTurnaroundActive = true;
+        routeFloor = navigator.currentFloor;
+      }
+
+      if (_stairTurnaroundActive) {
+        if (navigator.completedStairTurnaroundReached()) {
+          _stairTurnaroundActive = false;
+          _refreshMultiFloorLeg();
+        } else {
+          routePoints = navigator.completedStairTurnaroundGuide();
+          routeStatus = 'Turn around outside the stairs';
+        }
+        return;
+      }
+
+      if (routePoints.length < 2) {
+        _refreshMultiFloorLeg();
+        return;
+      }
+
+      final current = <double>[navigator.markerX, navigator.markerY];
+      final stairEntry = List<double>.from(routePoints.last);
+      final distanceToStair = hypot(
+        stairEntry[0] - current[0],
+        stairEntry[1] - current[1],
+      );
+
+      routePoints = <List<double>>[
+        current,
+        for (var i = 1; i < routePoints.length; i++)
+          List<double>.from(routePoints[i]),
+      ];
+
+      if (distanceToStair <=
+          (collisionRadius * 1.6).clamp(12.0, 32.0)) {
+        routeStatus = 'Enter the stairs';
+      }
+
+      _routeRefreshElapsed += dt;
+      final nearNextWaypoint = routePoints.length > 2 &&
+          hypot(
+                routePoints[1][0] - current[0],
+                routePoints[1][1] - current[1],
+              ) <=
+              (collisionRadius * 2.5).clamp(18.0, 50.0);
+
+      if (_routeRefreshElapsed < 0.25 && !nearNextWaypoint) return;
+      _routeRefreshElapsed = 0;
+
+      final refreshedLeg =
+          navigator.findRouteTowardFloor(routeTargetFloor!);
+      if (refreshedLeg != null) {
+        routePoints = refreshedLeg.path;
+        routeFloor = navigator.currentFloor;
+        routeStatus =
+            'Go to stairs: Floor ${refreshedLeg.sourceFloor} → ${refreshedLeg.targetFloor}';
+      }
+      return;
+    }
+
+    if (routePoints.length < 2) return;
+
     if (navigator.transition != null ||
         currentBuildingId != routeBuildingId ||
         navigator.currentFloor != routeFloor) {
@@ -458,7 +623,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     final dy = destination[1] - current[1];
     final distanceToDestination = hypot(dx, dy);
 
-    if (distanceToDestination <= (collisionRadius * 1.5).clamp(10.0, 30.0)) {
+    if (distanceToDestination <=
+        (collisionRadius * 1.5).clamp(10.0, 30.0)) {
       routePoints = const [];
       _routeRefreshElapsed = 0;
       routeBuildingId = null;
@@ -467,18 +633,12 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       return;
     }
 
-    // Anchor the visible route to the player's exact live position every frame,
-    // so the blue line moves with the blue player dot instead of staying at the
-    // position where the route was first created.
     routePoints = <List<double>>[
       current,
       for (var i = 1; i < routePoints.length; i++)
         List<double>.from(routePoints[i]),
     ];
 
-    // Re-run A* at a controlled cadence while the user walks. This removes
-    // waypoints already passed and safely reroutes if the user deviates, without
-    // doing a full path search at 60 FPS.
     _routeRefreshElapsed += dt;
     final nearNextWaypoint = routePoints.length > 2 &&
         hypot(
@@ -501,6 +661,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   void _clearRoute() {
     routePoints = const [];
     _routeRefreshElapsed = 0;
+    routeTargetFloor = null;
+    _stairTurnaroundActive = false;
     routeStatus = null;
     routeBuildingId = null;
     routeFloor = null;
@@ -537,6 +699,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
     final route = navigator.findSameFloorRoute(targetX, targetY);
     setState(() {
+      routeTargetFloor = null;
       routePoints = route;
       routeSelectionMode = false;
       _routeRefreshElapsed = 0;

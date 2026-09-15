@@ -28,7 +28,25 @@ class FloorTransition {
   FloorTransition(this.section, this.source, this.target, this.progress);
 }
 
+/// A same-floor walking leg that ends inside a staircase which can move the
+/// player toward a requested floor.
+class StairRouteLeg {
+  final StairSection section;
+  final List<List<double>> path;
+
+  const StairRouteLeg({
+    required this.section,
+    required this.path,
+  });
+
+  int get sourceFloor => section.source;
+  int get targetFloor => section.target;
+  List<double> get entryPoint => path.last;
+}
+
 class WorldNavigator {
+  StairSection? lastCompletedStair;
+
   final MapScene scene;
   double markerX;
   double markerY;
@@ -256,6 +274,283 @@ class WorldNavigator {
     );
   }
 
+  /// Stage 3: choose a reachable staircase on the current floor that moves the
+  /// player toward [targetFloor], then return a collision-safe A* walking leg
+  /// to that staircase.
+  ///
+  /// The route is intentionally computed one floor at a time. After the player
+  /// completes the physical stair transition, call this again on the new floor.
+  StairRouteLeg? findRouteTowardFloor(int targetFloor) {
+    final building = parent;
+    if (building == null || transition != null) return null;
+    if (targetFloor < 1 || targetFloor > building.floorCount) return null;
+    if (targetFloor == currentFloor) return null;
+
+    final key = '${building.id}:$currentFloor';
+    final candidates = _connections[key] ?? const <StairSection>[];
+    if (candidates.isEmpty) return null;
+
+    final goingDown = targetFloor < currentFloor;
+    final eligible = candidates.where((section) {
+      if (goingDown && section.target >= currentFloor) return false;
+      if (!goingDown && section.target <= currentFloor) return false;
+      return _floorCanReach(building.id, section.target, targetFloor);
+    }).toList();
+    if (eligible.isEmpty) return null;
+
+    final List<Barrier> barriers;
+    if (currentFloor == 1) {
+      barriers = groundBarriers;
+    } else {
+      barriers = _colliders[key]?.$1 ?? const <Barrier>[];
+    }
+
+    final pathfinder = SameFloorPathfinder(
+      barriers: barriers,
+      playerRadius: collisionRadius,
+      width: scene.width,
+      height: scene.height,
+    );
+
+    StairRouteLeg? best;
+    double bestCost = double.infinity;
+
+    for (final section in eligible) {
+      for (final stairLane in _stairLaneRoutes(building, section)) {
+        if (stairLane.length < 2) continue;
+
+        // A* only needs to reach the source-side entrance of the staircase.
+        // From there, append the staircase lane itself. This prevents the blue
+        // route from taking a diagonal shortcut through the stair graphic.
+        final approach = pathfinder.findPath(
+          [markerX, markerY],
+          stairLane.first,
+        );
+        if (approach.isEmpty) continue;
+
+        final path = <List<double>>[
+          ...approach,
+          for (var i = 1; i < stairLane.length; i++) stairLane[i],
+        ];
+
+        final walkingCost = _routeLength(path);
+        final remainingHops =
+            _floorHopDistance(building.id, section.target, targetFloor);
+        if (remainingHops == null) continue;
+
+        final cost = walkingCost + remainingHops * 150.0;
+        if (cost < bestCost) {
+          bestCost = cost;
+          best = StairRouteLeg(section: section, path: path);
+        }
+      }
+    }
+
+    return best;
+  }
+
+  bool _floorCanReach(String buildingId, int from, int target) {
+    return _floorHopDistance(buildingId, from, target) != null;
+  }
+
+  int? _floorHopDistance(String buildingId, int from, int target) {
+    if (from == target) return 0;
+    final queue = <(int, int)>[(from, 0)];
+    final visited = <int>{from};
+
+    var cursor = 0;
+    while (cursor < queue.length) {
+      final (floor, hops) = queue[cursor++];
+      final next =
+          _connections['$buildingId:$floor'] ?? const <StairSection>[];
+      for (final section in next) {
+        if (!visited.add(section.target)) continue;
+        if (section.target == target) return hops + 1;
+        queue.add((section.target, hops + 1));
+      }
+    }
+    return null;
+  }
+
+  double _stairCompletionRaw() {
+    return math.min(0.995, 1.0 - transitionThreshold + 0.015);
+  }
+
+  List<double> _stairWorldPoint(
+    MapItem building,
+    StairSection section,
+    double raw,
+    double laneFactor,
+  ) {
+    final transform =
+        _transforms[building.id] ?? FloorTransform.build(building);
+    final localY = section.direction == 'up'
+        ? section.height * (1 - raw)
+        : section.height * raw;
+    final local = section.stair.localToWorld(
+      section.width * laneFactor,
+      localY,
+    );
+    return transform.project(local[0], local[1]);
+  }
+
+  List<List<List<double>>> _stairLaneRoutes(
+      MapItem building, StairSection section) {
+    final preferredLane = section.direction == 'down' ? 0.78 : 0.22;
+    final laneFactors = section.direction == 'down'
+        ? <double>[preferredLane, 0.72, 0.84]
+        : <double>[preferredLane, 0.28, 0.16];
+    final completion = _stairCompletionRaw();
+
+    // Start just inside the source side so the existing stair activator can
+    // arm normally, then follow the stair longitudinally to the transition
+    // completion level. These are progress levels, not fixed map coordinates.
+    final rawLevels = <double>[
+      0.035,
+      0.25,
+      0.50,
+      0.75,
+      completion,
+    ];
+
+    return [
+      for (final lane in laneFactors)
+        [
+          for (final raw in rawLevels)
+            _stairWorldPoint(building, section, raw, lane),
+        ],
+    ];
+  }
+
+  /// Route geometry to show while the player is physically walking an active
+  /// staircase. It starts at the player's live position and contains only
+  /// future points along the correct stair lane.
+  List<List<double>> activeStairRouteGuide() {
+    final t = transition;
+    final building = parent;
+    if (t == null || building == null) return const <List<double>>[];
+
+    final transform =
+        _transforms[building.id] ?? FloorTransform.build(building);
+    final local = transform.unproject(markerX, markerY);
+    final progress = sectionProgress(
+      t.section,
+      local[0],
+      local[1],
+    ).$3.clamp(0.0, 1.0).toDouble();
+
+    final completion = _stairCompletionRaw();
+    final lane = t.section.direction == 'down' ? 0.78 : 0.22;
+    final endRaw = math.max(progress, completion);
+
+    final guide = <List<double>>[
+      [markerX, markerY],
+    ];
+
+    for (final fraction in [0.25, 0.50, 0.75, 1.0]) {
+      final raw = progress + (endRaw - progress) * fraction;
+      guide.add(_stairWorldPoint(building, t.section, raw, lane));
+    }
+    return guide;
+  }
+
+  /// Route the player around the OUTSIDE of a completed switchback stair before
+  /// starting the next floor leg. This prevents immediately re-entering the
+  /// same stair from its target side and accidentally going back up a floor.
+  List<List<double>> completedStairTurnaroundGuide() {
+    final section = lastCompletedStair;
+    final building = parent;
+    if (section == null || building == null) {
+      return const <List<double>>[];
+    }
+
+    final preferredRight = section.direction == 'down';
+    final clearance = math.max(14.0, collisionRadius + 8.0);
+    final sourceRaw = -math.max(0.10, clearance / math.max(1.0, section.height));
+    final targetRaw = 1.0 + math.max(0.10, clearance / math.max(1.0, section.height));
+    final lane = section.direction == 'down' ? 0.78 : 0.22;
+
+    List<List<double>> buildGuide(bool rightSide) {
+      final outsideX = rightSide
+          ? section.width + clearance
+          : -clearance;
+      final sourceY = section.direction == 'up'
+          ? section.height * (1 - sourceRaw)
+          : section.height * sourceRaw;
+      final targetY = section.direction == 'up'
+          ? section.height * (1 - targetRaw)
+          : section.height * targetRaw;
+      final sourceLaneX = section.width * lane;
+      final targetLaneX = section.width * lane;
+
+      final transform =
+          _transforms[building.id] ?? FloorTransform.build(building);
+
+      List<double> project(double x, double y) {
+        final local = section.stair.localToWorld(x, y);
+        return transform.project(local[0], local[1]);
+      }
+
+      return <List<double>>[
+        [markerX, markerY],
+        project(targetLaneX, targetY),
+        project(outsideX, targetY),
+        project(outsideX, sourceY),
+        project(sourceLaneX, sourceY),
+      ];
+    }
+
+    bool safe(List<List<double>> guide) {
+      // The first point is the live player position. Check only future guide
+      // points; route segments are intentionally outside the stair activator.
+      for (var i = 1; i < guide.length; i++) {
+        if (!allowed(guide[i])) return false;
+      }
+      return true;
+    }
+
+    final preferred = buildGuide(preferredRight);
+    if (safe(preferred)) return preferred;
+
+    final alternate = buildGuide(!preferredRight);
+    if (safe(alternate)) return alternate;
+
+    // If nearby walls make both full bypasses fail the generic collision test,
+    // still prefer the direction matching the stair lane. The player movement
+    // system remains authoritative and will prevent crossing real barriers.
+    return preferred;
+  }
+
+  bool completedStairTurnaroundReached() {
+    final section = lastCompletedStair;
+    final building = parent;
+    if (section == null || building == null) return true;
+
+    final transform =
+        _transforms[building.id] ?? FloorTransform.build(building);
+    final floorLocal = transform.unproject(markerX, markerY);
+    final raw = sectionProgress(
+      section,
+      floorLocal[0],
+      floorLocal[1],
+    ).$3;
+
+    // We are safely beyond the source side of the old activator. At this point
+    // the next stair leg can start from raw ~= 0 in the correct direction.
+    return raw <= -0.08 && exitAreas.isEmpty;
+  }
+
+  double _routeLength(List<List<double>> path) {
+    double total = 0;
+    for (var i = 1; i < path.length; i++) {
+      total += hypot(
+        path[i][0] - path[i - 1][0],
+        path[i][1] - path[i - 1][1],
+      );
+    }
+    return total;
+  }
+
   RuntimeIndex<StairSection> _buildStairIndex(List<StairSection> stairs, MapItem building) {
     final boxes = stairs.map((s) {
       final area = _buildArea(s.stair, s.source, building);
@@ -342,6 +637,7 @@ class WorldNavigator {
 
   void enterBuilding(MapItem bldg) {
     parent = bldg;
+    lastCompletedStair = null;
     transition = null;
     previousPoint = null;
     previousWorldPoint = null;
@@ -356,6 +652,7 @@ class WorldNavigator {
 
   void exitBuilding() {
     parent = null;
+    lastCompletedStair = null;
     transition = null;
     previousPoint = null;
     previousWorldPoint = null;
@@ -631,6 +928,7 @@ class WorldNavigator {
   }
 
   void _waitForStairExit(FloorTransition completed) {
+    lastCompletedStair = completed.section;
     final sourceArea = _buildArea(completed.section.stair, completed.source, parent);
     exitAreas = [sourceArea];
     waitFloor = currentFloor;
