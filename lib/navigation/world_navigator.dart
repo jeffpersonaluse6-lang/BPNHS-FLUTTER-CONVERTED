@@ -423,8 +423,11 @@ class WorldNavigator {
   }
 
   /// Route geometry to show while the player is physically walking an active
-  /// staircase. It starts at the player's live position and contains only
-  /// future points along the correct stair lane.
+  /// staircase. It starts at the player's live position and stays on the SAME
+  /// physical stair lane the player is already using.
+  ///
+  /// Do not force a direction-based left/right lane here: on switchback stairs
+  /// that can draw a blue segment straight through the center railing/wall.
   List<List<double>> activeStairRouteGuide() {
     final t = transition;
     final building = parent;
@@ -432,15 +435,26 @@ class WorldNavigator {
 
     final transform =
         _transforms[building.id] ?? FloorTransform.build(building);
-    final local = transform.unproject(markerX, markerY);
+    final floorLocal = transform.unproject(markerX, markerY);
     final progress = sectionProgress(
       t.section,
-      local[0],
-      local[1],
+      floorLocal[0],
+      floorLocal[1],
     ).$3.clamp(0.0, 1.0).toDouble();
 
+    // Convert the player's live floor position into THIS stair's own local
+    // coordinates. The normalized X tells us which side/lane the player is
+    // physically on. Keep future guide points on that lane so the route never
+    // jumps laterally through a center railing.
+    final stairLocal = t.section.stair.worldToLocal(
+      floorLocal[0],
+      floorLocal[1],
+    );
+    final lane = t.section.width <= 1e-9
+        ? 0.5
+        : (stairLocal[0] / t.section.width).clamp(0.12, 0.88).toDouble();
+
     final completion = _stairCompletionRaw();
-    final lane = t.section.direction == 'down' ? 0.78 : 0.22;
     final endRaw = math.max(progress, completion);
 
     final guide = <List<double>>[
@@ -549,6 +563,31 @@ class WorldNavigator {
       );
     }
     return total;
+  }
+
+  /// Stage 4: route from Floor 1 through a real collision opening and out onto
+  /// the campus. The same ground collision geometry is used on both sides of
+  /// the building boundary, so walls remain blocked and doors/openings remain
+  /// walkable.
+  List<List<double>> findFloor1CampusRoute(double targetX, double targetY) {
+    final building = parent;
+    if (building == null || currentFloor != 1 || transition != null) {
+      return const <List<double>>[];
+    }
+    if (inside(building, targetX, targetY)) {
+      return const <List<double>>[];
+    }
+
+    final pathfinder = SameFloorPathfinder(
+      barriers: groundBarriers,
+      playerRadius: collisionRadius,
+      width: scene.width,
+      height: scene.height,
+    );
+    return pathfinder.findPath(
+      [markerX, markerY],
+      [targetX, targetY],
+    );
   }
 
   RuntimeIndex<StairSection> _buildStairIndex(List<StairSection> stairs, MapItem building) {

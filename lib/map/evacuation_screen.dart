@@ -38,6 +38,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   int? routeFloor;
   int? routeTargetFloor;
   bool _stairTurnaroundActive = false;
+  bool _routeAcrossBuildingExit = false;
+  List<double>? _campusRouteDestination;
   double _routeRefreshElapsed = 0;
 
   static const double joystickBaseSize = 148;
@@ -465,6 +467,36 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     });
   }
 
+  void _beginCampusExitLeg() {
+    final destination = _campusRouteDestination;
+    if (destination == null || navigator.parent == null) {
+      _routeAcrossBuildingExit = false;
+      routePoints = const [];
+      routeStatus = 'Campus route cancelled';
+      return;
+    }
+
+    routeTargetFloor = null;
+    _stairTurnaroundActive = false;
+    routeFloor = 1;
+    _routeRefreshElapsed = 0;
+
+    final route = navigator.findFloor1CampusRoute(
+      destination[0],
+      destination[1],
+    );
+    routePoints = route;
+    if (route.isEmpty) {
+      _routeAcrossBuildingExit = false;
+      _campusRouteDestination = null;
+      routeStatus = 'No valid building exit route found';
+      routeBuildingId = null;
+      routeFloor = null;
+    } else {
+      routeStatus = 'Exit building → campus';
+    }
+  }
+
   void _refreshMultiFloorLeg() {
     final targetFloor = routeTargetFloor;
     final building = navigator.parent;
@@ -534,6 +566,29 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       }
 
       if (navigator.currentFloor == routeTargetFloor) {
+        if (_routeAcrossBuildingExit &&
+            _campusRouteDestination != null &&
+            navigator.currentFloor == 1) {
+          if (routeFloor != navigator.currentFloor) {
+            _stairTurnaroundActive = true;
+            routeFloor = navigator.currentFloor;
+          }
+
+          if (_stairTurnaroundActive) {
+            if (navigator.completedStairTurnaroundReached()) {
+              _stairTurnaroundActive = false;
+              _beginCampusExitLeg();
+            } else {
+              routePoints = navigator.completedStairTurnaroundGuide();
+              routeStatus = 'Turn around outside the stairs';
+            }
+            return;
+          }
+
+          _beginCampusExitLeg();
+          return;
+        }
+
         final reached = routeTargetFloor!;
         routePoints = const [];
         routeTargetFloor = null;
@@ -604,6 +659,86 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       return;
     }
 
+    if (_routeAcrossBuildingExit &&
+        routeTargetFloor == null &&
+        _campusRouteDestination != null) {
+      final destination = _campusRouteDestination!;
+      final current = <double>[navigator.markerX, navigator.markerY];
+      final distanceToDestination = hypot(
+        destination[0] - current[0],
+        destination[1] - current[1],
+      );
+
+      if (distanceToDestination <=
+          (collisionRadius * 1.5).clamp(10.0, 30.0)) {
+        routePoints = const [];
+        _routeAcrossBuildingExit = false;
+        _campusRouteDestination = null;
+        _routeRefreshElapsed = 0;
+        routeBuildingId = null;
+        routeFloor = null;
+        routeStatus = 'Campus destination reached';
+        return;
+      }
+
+      if (currentBuildingId == null) {
+        if (routeBuildingId != null || routePoints.length < 2) {
+          routeBuildingId = null;
+          routeFloor = 1;
+          final campusRoute = navigator.findSameFloorRoute(
+            destination[0],
+            destination[1],
+          );
+          if (campusRoute.isNotEmpty) {
+            routePoints = campusRoute;
+            routeStatus = 'Campus route';
+          }
+        }
+      } else if (currentBuildingId != routeBuildingId ||
+          navigator.currentFloor != 1) {
+        routePoints = const [];
+        _routeAcrossBuildingExit = false;
+        _campusRouteDestination = null;
+        routeBuildingId = null;
+        routeFloor = null;
+        routeStatus = 'Campus route cancelled';
+        return;
+      }
+
+      if (routePoints.length >= 2) {
+        routePoints = <List<double>>[
+          current,
+          for (var i = 1; i < routePoints.length; i++)
+            List<double>.from(routePoints[i]),
+        ];
+      }
+
+      _routeRefreshElapsed += dt;
+      final nearNextWaypoint = routePoints.length > 2 &&
+          hypot(
+                routePoints[1][0] - current[0],
+                routePoints[1][1] - current[1],
+              ) <=
+              (collisionRadius * 2.5).clamp(18.0, 50.0);
+
+      if (_routeRefreshElapsed >= 0.25 || nearNextWaypoint) {
+        _routeRefreshElapsed = 0;
+        final refreshed = currentBuildingId == null
+            ? navigator.findSameFloorRoute(
+                destination[0],
+                destination[1],
+              )
+            : navigator.findFloor1CampusRoute(
+                destination[0],
+                destination[1],
+              );
+        if (refreshed.isNotEmpty) {
+          routePoints = refreshed;
+        }
+      }
+      return;
+    }
+
     if (routePoints.length < 2) return;
 
     if (navigator.transition != null ||
@@ -663,6 +798,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     _routeRefreshElapsed = 0;
     routeTargetFloor = null;
     _stairTurnaroundActive = false;
+    _routeAcrossBuildingExit = false;
+    _campusRouteDestination = null;
     routeStatus = null;
     routeBuildingId = null;
     routeFloor = null;
@@ -687,12 +824,25 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     final targetX = world[0];
     final targetY = world[1];
 
-    // Until multi-floor/building transitions are implemented, a route started
-    // inside a building must stay inside that same building footprint.
-    if (navigator.parent != null &&
-        !navigator.inside(navigator.parent!, targetX, targetY)) {
+    final building = navigator.parent;
+    if (building != null &&
+        !navigator.inside(building, targetX, targetY)) {
       setState(() {
-        routeStatus = 'Choose a point on this building floor';
+        routeSelectionMode = false;
+        _routeAcrossBuildingExit = true;
+        _campusRouteDestination = [targetX, targetY];
+        routeBuildingId = building.id;
+        routeFloor = navigator.currentFloor;
+        _routeRefreshElapsed = 0;
+
+        if (navigator.currentFloor > 1) {
+          routeTargetFloor = 1;
+          _stairTurnaroundActive = false;
+          _refreshMultiFloorLeg();
+          routeStatus = 'Route to Campus: first go to Floor 1';
+        } else {
+          _beginCampusExitLeg();
+        }
       });
       return;
     }
@@ -700,6 +850,9 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     final route = navigator.findSameFloorRoute(targetX, targetY);
     setState(() {
       routeTargetFloor = null;
+      _stairTurnaroundActive = false;
+      _routeAcrossBuildingExit = false;
+      _campusRouteDestination = null;
       routePoints = route;
       routeSelectionMode = false;
       _routeRefreshElapsed = 0;
