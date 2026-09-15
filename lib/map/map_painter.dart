@@ -20,6 +20,7 @@ class MapPainter extends CustomPainter {
   final List<double> playerCenter;
   final double playerSize;
   final double collisionRadius;
+  final List<List<double>> routePoints;
 
   MapPainter({
     required this.scene,
@@ -31,6 +32,7 @@ class MapPainter extends CustomPainter {
     required this.playerCenter,
     this.playerSize = 20,
     this.collisionRadius = 10,
+    this.routePoints = const [],
   });
 
   FloorTransform? _ft;
@@ -74,6 +76,8 @@ class MapPainter extends CustomPainter {
     for (final building in scene.buildings()) {
       _renderBuilding(canvas, building);
     }
+
+    _drawRoute(canvas);
 
     canvas.restore();
 
@@ -146,6 +150,43 @@ class MapPainter extends CustomPainter {
         }
       }
     }
+  }
+
+  void _drawRoute(Canvas canvas) {
+    if (routePoints.length < 2) return;
+
+    final safeScale = cameraScale.abs() < 1e-9 ? 1.0 : cameraScale.abs();
+    final path = Path()
+      ..moveTo(routePoints.first[0], routePoints.first[1]);
+    for (var i = 1; i < routePoints.length; i++) {
+      path.lineTo(routePoints[i][0], routePoints[i][1]);
+    }
+
+    final routePaint = Paint()
+      ..color = const Color(0xFF2563EB)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5 / safeScale
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawPath(path, routePaint);
+
+    final destination = routePoints.last;
+    final markerPaint = Paint()
+      ..color = const Color(0xFFDC2626)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(
+      Offset(destination[0], destination[1]),
+      8 / safeScale,
+      markerPaint,
+    );
+    markerPaint
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(
+      Offset(destination[0], destination[1]),
+      3 / safeScale,
+      markerPaint,
+    );
   }
 
   void _drawPlayer(Canvas canvas, Size size) {
@@ -831,6 +872,7 @@ class MapPainter extends CustomPainter {
         oldDelegate.playerCenter[0] != playerCenter[0] ||
         oldDelegate.playerCenter[1] != playerCenter[1] ||
         oldDelegate.playerSize != playerSize ||
-        oldDelegate.collisionRadius != collisionRadius;
+        oldDelegate.collisionRadius != collisionRadius ||
+        !identical(oldDelegate.routePoints, routePoints);
   }
 }

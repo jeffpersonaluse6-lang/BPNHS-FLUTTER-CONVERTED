@@ -29,6 +29,15 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   bool moveMode = false;
   bool followActive = false;
 
+  // Stage 2 route visualization. This stays same-floor only until stair routing
+  // is added in a later stage.
+  List<List<double>> routePoints = const [];
+  bool routeSelectionMode = false;
+  String? routeStatus;
+  String? routeBuildingId;
+  int? routeFloor;
+  double _routeRefreshElapsed = 0;
+
   static const double joystickBaseSize = 148;
   static const double joystickKnobSize = 56;
   Offset joystickKnobPosition = Offset.zero;
@@ -67,6 +76,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       camera.follow([navigator.markerX, navigator.markerY], dt,
           moving: moved, diameter: playerSize);
       navigator.update(navigator.markerX, navigator.markerY);
+      _updateLiveRoute(dt);
       setState(() {});
     } else if (followActive) {
       final changed = camera.follow(
@@ -102,6 +112,9 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             '${navigator.parent!.text} · Floor ${t.source} → ${t.target} · stairs ${(t.progress * 100).toStringAsFixed(0)}%';
       }
     }
+    if (routeStatus != null) {
+      status = '$status · $routeStatus';
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FB),
@@ -123,6 +136,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                           camera.width = constraints.maxWidth;
                           camera.height = constraints.maxHeight;
                           return GestureDetector(
+                            onTapUp: _onMapTap,
                             onScaleStart: _onScaleStart,
                             onScaleUpdate: _onScaleUpdate,
                             child: CustomPaint(
@@ -139,6 +153,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                                 ],
                                 playerSize: playerSize,
                                 collisionRadius: collisionRadius,
+                                routePoints: routePoints,
                               ),
                               size: Size.infinite,
                             ),
@@ -182,9 +197,11 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                       fontWeight: FontWeight.bold),
                 ),
                 Text(
-                  moveMode
-                      ? 'MOVE USER MODE - use the joystick.'
-                      : 'MAP MODE - drag to pan; pinch to zoom.',
+                  routeSelectionMode
+                      ? 'ROUTE TEST - tap a destination on the current floor.'
+                      : moveMode
+                          ? 'MOVE USER MODE - use the joystick.'
+                          : 'MAP MODE - drag to pan; pinch to zoom.',
                   style: const TextStyle(
                       color: Color(0xFFDCE8F7), fontSize: 13),
                 ),
@@ -240,6 +257,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                   onChanged: (v) {
                     playerSize = v;
                     navigator.collisionRadius = collisionRadius;
+                    _clearRoute();
                     setState(() {});
                   },
                 ),
@@ -249,7 +267,43 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           const SizedBox(width: 16),
           ElevatedButton.icon(
             onPressed: () {
+              setState(() {
+                routeSelectionMode = !routeSelectionMode;
+                if (routeSelectionMode) {
+                  moveMode = false;
+                  joystickX = 0;
+                  joystickY = 0;
+                  routeStatus = 'Tap a destination';
+                } else if (routePoints.isEmpty) {
+                  routeStatus = null;
+                }
+              });
+            },
+            icon: Icon(routeSelectionMode ? Icons.close : Icons.alt_route),
+            label: Text(routeSelectionMode ? 'Cancel route' : 'Set route'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: routeSelectionMode
+                  ? const Color(0xFFD9E8FF)
+                  : Colors.white,
+              foregroundColor: const Color(0xFF12345A),
+            ),
+          ),
+          if (routePoints.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            IconButton(
+              onPressed: () {
+                setState(_clearRoute);
+              },
+              tooltip: 'Clear route',
+              icon: const Icon(Icons.route_outlined),
+              color: const Color(0xFF12345A),
+            ),
+          ],
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            onPressed: () {
               moveMode = !moveMode;
+              routeSelectionMode = false;
               followActive = true;
               if (!moveMode) {
                 joystickX = 0;
@@ -377,6 +431,125 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   void _centerJoystickKnob() {
     final center = (joystickBaseSize - joystickKnobSize) / 2;
     joystickKnobPosition = Offset(center, center);
+  }
+
+  void _updateLiveRoute(double dt) {
+    if (routePoints.length < 2) return;
+
+    final currentBuildingId = navigator.parent?.id;
+
+    // Stage 2 is intentionally same-surface only. If the player changes
+    // building/floor or starts a stair transition, keep the behavior safe and
+    // wait for the multi-floor routing stage instead of drawing a false route.
+    if (navigator.transition != null ||
+        currentBuildingId != routeBuildingId ||
+        navigator.currentFloor != routeFloor) {
+      routePoints = const [];
+      _routeRefreshElapsed = 0;
+      routeBuildingId = null;
+      routeFloor = null;
+      routeStatus = 'Route cleared after changing floor/area';
+      return;
+    }
+
+    final current = <double>[navigator.markerX, navigator.markerY];
+    final destination = List<double>.from(routePoints.last);
+    final dx = destination[0] - current[0];
+    final dy = destination[1] - current[1];
+    final distanceToDestination = hypot(dx, dy);
+
+    if (distanceToDestination <= (collisionRadius * 1.5).clamp(10.0, 30.0)) {
+      routePoints = const [];
+      _routeRefreshElapsed = 0;
+      routeBuildingId = null;
+      routeFloor = null;
+      routeStatus = 'Destination reached';
+      return;
+    }
+
+    // Anchor the visible route to the player's exact live position every frame,
+    // so the blue line moves with the blue player dot instead of staying at the
+    // position where the route was first created.
+    routePoints = <List<double>>[
+      current,
+      for (var i = 1; i < routePoints.length; i++)
+        List<double>.from(routePoints[i]),
+    ];
+
+    // Re-run A* at a controlled cadence while the user walks. This removes
+    // waypoints already passed and safely reroutes if the user deviates, without
+    // doing a full path search at 60 FPS.
+    _routeRefreshElapsed += dt;
+    final nearNextWaypoint = routePoints.length > 2 &&
+        hypot(
+              routePoints[1][0] - current[0],
+              routePoints[1][1] - current[1],
+            ) <=
+            (collisionRadius * 2.5).clamp(18.0, 50.0);
+
+    if (_routeRefreshElapsed < 0.25 && !nearNextWaypoint) return;
+    _routeRefreshElapsed = 0;
+
+    final refreshed =
+        navigator.findSameFloorRoute(destination[0], destination[1]);
+    if (refreshed.isNotEmpty) {
+      routePoints = refreshed;
+      routeStatus = 'Route ready';
+    }
+  }
+
+  void _clearRoute() {
+    routePoints = const [];
+    _routeRefreshElapsed = 0;
+    routeStatus = null;
+    routeBuildingId = null;
+    routeFloor = null;
+    routeSelectionMode = false;
+  }
+
+  void _onMapTap(TapUpDetails details) {
+    if (!routeSelectionMode || moveMode) return;
+
+    if (navigator.transition != null) {
+      setState(() {
+        routeStatus = 'Finish the stair transition first';
+        routeSelectionMode = false;
+      });
+      return;
+    }
+
+    final world = camera.world([
+      details.localPosition.dx,
+      details.localPosition.dy,
+    ]);
+    final targetX = world[0];
+    final targetY = world[1];
+
+    // Until multi-floor/building transitions are implemented, a route started
+    // inside a building must stay inside that same building footprint.
+    if (navigator.parent != null &&
+        !navigator.inside(navigator.parent!, targetX, targetY)) {
+      setState(() {
+        routeStatus = 'Choose a point on this building floor';
+      });
+      return;
+    }
+
+    final route = navigator.findSameFloorRoute(targetX, targetY);
+    setState(() {
+      routePoints = route;
+      routeSelectionMode = false;
+      _routeRefreshElapsed = 0;
+      if (route.isEmpty) {
+        routeStatus = 'No same-floor route found';
+        routeBuildingId = null;
+        routeFloor = null;
+      } else {
+        routeStatus = 'Route ready';
+        routeBuildingId = navigator.parent?.id;
+        routeFloor = navigator.currentFloor;
+      }
+    });
   }
 
   List<double>? _gestureAnchor;
