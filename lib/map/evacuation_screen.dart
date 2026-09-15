@@ -41,6 +41,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   bool _routeAcrossBuildingExit = false;
   List<double>? _campusRouteDestination;
   String? _evacuationGateKind;
+  String? _evacuationRouteRole;
   double _routeRefreshElapsed = 0;
 
   static const double joystickBaseSize = 148;
@@ -300,11 +301,12 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             const SizedBox(width: 8),
           ],
           ElevatedButton.icon(
-            onPressed: () => _startEvacuationRoute('main_gate'),
+            onPressed: () =>
+                _startRecommendedEvacuationRoute(alternative: false),
             icon: const Icon(Icons.exit_to_app),
             label: const Text('Main route'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: _evacuationGateKind == 'main_gate'
+              backgroundColor: _evacuationRouteRole == 'main'
                   ? const Color(0xFFD9E8FF)
                   : Colors.white,
               foregroundColor: const Color(0xFF12345A),
@@ -312,11 +314,12 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           ),
           const SizedBox(width: 8),
           ElevatedButton.icon(
-            onPressed: () => _startEvacuationRoute('secondary_gate'),
+            onPressed: () =>
+                _startRecommendedEvacuationRoute(alternative: true),
             icon: const Icon(Icons.alt_route),
             label: const Text('Alternative'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: _evacuationGateKind == 'secondary_gate'
+              backgroundColor: _evacuationRouteRole == 'alternative'
                   ? const Color(0xFFFFE8CC)
                   : Colors.white,
               foregroundColor: const Color(0xFF8A4B08),
@@ -505,7 +508,39 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   String _gateLabel(String kind) =>
       kind == 'secondary_gate' ? 'Secondary Gate' : 'Main Gate';
 
-  void _startEvacuationRoute(String gateKind) {
+  String _evacuationRoleLabel() =>
+      _evacuationRouteRole == 'alternative' ? 'Alternative' : 'Main';
+
+  void _startRecommendedEvacuationRoute({required bool alternative}) {
+    if (navigator.transition != null) {
+      setState(() {
+        routeStatus = 'Finish the stair transition first';
+        routeSelectionMode = false;
+      });
+      return;
+    }
+
+    final ranked = navigator.rankEvacuationGates();
+    final index = alternative ? 1 : 0;
+
+    if (ranked.length <= index) {
+      setState(() {
+        routeStatus = alternative
+            ? 'No meaningfully different alternative evacuation route is available'
+            : 'No valid campus evacuation route is available';
+        _evacuationGateKind = null;
+        _evacuationRouteRole = null;
+      });
+      return;
+    }
+
+    _startEvacuationRoute(
+      ranked[index].kind,
+      role: alternative ? 'alternative' : 'main',
+    );
+  }
+
+  void _startEvacuationRoute(String gateKind, {required String role}) {
     if (navigator.transition != null) {
       setState(() {
         routeStatus = 'Finish the stair transition first';
@@ -520,6 +555,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         routeStatus =
             '${_gateLabel(gateKind)} is not configured on the campus map';
         _evacuationGateKind = null;
+        _evacuationRouteRole = null;
       });
       return;
     }
@@ -532,6 +568,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       joystickX = 0;
       joystickY = 0;
       _evacuationGateKind = gateKind;
+      _evacuationRouteRole = role;
       _routeAcrossBuildingExit = true;
       _campusRouteDestination = destination;
       _routeRefreshElapsed = 0;
@@ -543,7 +580,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         routeTargetFloor = 1;
         _refreshMultiFloorLeg();
         routeStatus =
-            '${gateKind == 'secondary_gate' ? 'Alternative' : 'Main'} evacuation route → ${_gateLabel(gateKind)} · first go to Floor 1';
+            '${_evacuationRoleLabel()} evacuation route → ${_gateLabel(gateKind)} · first go to Floor 1';
         return;
       }
 
@@ -560,11 +597,12 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         _routeAcrossBuildingExit = false;
         _campusRouteDestination = null;
         _evacuationGateKind = null;
+        _evacuationRouteRole = null;
         routeBuildingId = null;
         routeFloor = null;
       } else {
         routeStatus =
-            '${gateKind == 'secondary_gate' ? 'Alternative' : 'Main'} evacuation route → ${_gateLabel(gateKind)}';
+            '${_evacuationRoleLabel()} evacuation route → ${_gateLabel(gateKind)}';
         routeFloor = 1;
       }
     });
@@ -607,6 +645,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     if (route.isEmpty) {
       _routeAcrossBuildingExit = false;
       _campusRouteDestination = null;
+      _evacuationGateKind = null;
+      _evacuationRouteRole = null;
       routeStatus = 'No valid building exit route found';
       routeBuildingId = null;
       routeFloor = null;
@@ -661,6 +701,41 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     routeStatus = 'Go to stairs: Floor ${leg.sourceFloor} → ${leg.targetFloor}';
   }
 
+  bool _shortRouteConnectorIsWalkable(List<double> a, List<double> b) {
+    final dx = b[0] - a[0];
+    final dy = b[1] - a[1];
+    final distance = hypot(dx, dy);
+    if (distance < 1e-6) return true;
+
+    // Cheap collision validation for the short player -> route connector.
+    // This uses the navigator's existing collision index and does NOT rerun A*.
+    final spacing = (collisionRadius * 0.45).clamp(4.0, 10.0);
+    final steps = (distance / spacing).ceil().clamp(2, 24);
+
+    for (var i = 1; i < steps; i++) {
+      final t = i / steps;
+      final point = <double>[a[0] + dx * t, a[1] + dy * t];
+      if (!navigator.allowed(point)) return false;
+    }
+    return true;
+  }
+
+  List<double> _closestPointOnRouteSegment(
+    List<double> point,
+    List<double> a,
+    List<double> b,
+  ) {
+    final dx = b[0] - a[0];
+    final dy = b[1] - a[1];
+    final length2 = dx * dx + dy * dy;
+    if (length2 < 1e-9) return List<double>.from(a);
+
+    final t = (((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length2)
+        .clamp(0.0, 1.0);
+
+    return <double>[a[0] + dx * t, a[1] + dy * t];
+  }
+
   void _consumeReachedRouteWaypoints(List<double> current) {
     final threshold = (collisionRadius * 2.5).clamp(18.0, 50.0);
 
@@ -675,6 +750,51 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           List<double>.from(routePoints[i]),
       ];
     }
+
+    if (routePoints.length < 3) return;
+
+    // If the player is already beside/on a later road segment, snap the visible
+    // blue line to the nearest reachable point on that segment immediately
+    // instead of forcing the player to walk back to a stale waypoint.
+    final maxSegment = (routePoints.length - 2).clamp(1, 5).toInt();
+    final snapDistance = (collisionRadius * 5.0).clamp(40.0, 95.0);
+
+    var bestSegment = -1;
+    var bestDistance = double.infinity;
+    List<double>? bestPoint;
+
+    for (var i = 1; i <= maxSegment; i++) {
+      final projection = _closestPointOnRouteSegment(
+        current,
+        routePoints[i],
+        routePoints[i + 1],
+      );
+      final distance = hypot(
+        projection[0] - current[0],
+        projection[1] - current[1],
+      );
+
+      if (distance >= bestDistance || distance > snapDistance) continue;
+      if (!_shortRouteConnectorIsWalkable(current, projection)) continue;
+
+      bestDistance = distance;
+      bestSegment = i;
+      bestPoint = projection;
+    }
+
+    if (bestSegment < 0 || bestPoint == null) return;
+
+    final snapped = <List<double>>[current];
+
+    if (bestDistance > 1.0) {
+      snapped.add(bestPoint);
+    }
+
+    for (var i = bestSegment + 1; i < routePoints.length; i++) {
+      snapped.add(List<double>.from(routePoints[i]));
+    }
+
+    routePoints = snapped;
   }
 
   void _updateLiveRoute(double dt) {
@@ -810,6 +930,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         routeStatus = _evacuationGateKind == null
             ? 'Campus destination reached'
             : '${_gateLabel(_evacuationGateKind!)} reached';
+        _evacuationGateKind = null;
+        _evacuationRouteRole = null;
         return;
       }
 
@@ -825,7 +947,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             routePoints = campusRoute;
             routeStatus = _evacuationGateKind == null
                 ? 'Campus route'
-                : '${_evacuationGateKind == 'secondary_gate' ? 'Alternative' : 'Main'} evacuation route → ${_gateLabel(_evacuationGateKind!)}';
+                : '${_evacuationRoleLabel()} evacuation route → ${_gateLabel(_evacuationGateKind!)}';
           }
         }
       } else if (navigator.currentFloor != 1) {
@@ -876,14 +998,20 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         ];
       }
 
-      _routeRefreshElapsed += dt;
+      // Official evacuation routes do NOT need a timer-based A* refresh while
+      // the campus geometry is static. The previous 1.5-second recalculation
+      // caused a visible FPS spike exactly when the blue line changed.
+      //
+      // Floor/building transitions above already force an immediate reroute,
+      // and future hazards can explicitly request one when hazard state changes.
+      if (_evacuationGateKind != null) {
+        _routeRefreshElapsed = 0;
+        return;
+      }
 
-      // Weighted road-aware A* is intentionally more expensive than the old
-      // distance-only route. Refresh evacuation routes much less often while
-      // the map is static; floor/building changes already trigger immediate
-      // reroutes above. This removes the visible 0.25-second FPS spikes.
-      final refreshInterval = _evacuationGateKind != null ? 1.5 : 0.5;
-      if (_routeRefreshElapsed < refreshInterval) return;
+      // Keep live refresh only for manually selected campus destinations.
+      _routeRefreshElapsed += dt;
+      if (_routeRefreshElapsed < 0.5) return;
 
       _routeRefreshElapsed = 0;
       final refreshed = currentBuildingId == null
@@ -956,6 +1084,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     _routeAcrossBuildingExit = false;
     _campusRouteDestination = null;
     _evacuationGateKind = null;
+    _evacuationRouteRole = null;
     routeStatus = null;
     routeBuildingId = null;
     routeFloor = null;
@@ -984,6 +1113,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     if (building != null && !navigator.inside(building, targetX, targetY)) {
       setState(() {
         routeSelectionMode = false;
+        _evacuationGateKind = null;
+        _evacuationRouteRole = null;
         _routeAcrossBuildingExit = true;
         _campusRouteDestination = [targetX, targetY];
         routeBuildingId = building.id;
@@ -1009,6 +1140,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       _routeAcrossBuildingExit = false;
       _campusRouteDestination = null;
       _evacuationGateKind = null;
+      _evacuationRouteRole = null;
       routePoints = route;
       routeSelectionMode = false;
       _routeRefreshElapsed = 0;

@@ -41,6 +41,18 @@ class StairRouteLeg {
   List<double> get entryPoint => path.last;
 }
 
+class EvacuationGateOption {
+  final String kind;
+  final double score;
+  final List<List<double>> previewRoute;
+
+  const EvacuationGateOption({
+    required this.kind,
+    required this.score,
+    this.previewRoute = const [],
+  });
+}
+
 class WorldNavigator {
   StairSection? lastCompletedStair;
 
@@ -572,6 +584,116 @@ class WorldNavigator {
       total += hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
     }
     return total;
+  }
+
+  /// Stage 6B: rank official campus exits from best to fallback.
+  ///
+  /// On Campus/Floor 1 this uses the real road-aware collision-safe route.
+  /// On upper floors the indoor descent cost is mostly shared by every gate,
+  /// so a road-aware campus egress estimate is used until Floor 1 is reached.
+  List<EvacuationGateOption> rankEvacuationGates() {
+    if (transition != null) return const <EvacuationGateOption>[];
+
+    final options = <EvacuationGateOption>[];
+    for (final kind in const ['main_gate', 'secondary_gate']) {
+      final target = campusGateApproach(kind);
+      if (target == null) continue;
+
+      if (parent == null || currentFloor == 1) {
+        final route = findCampusGateRoute(kind);
+        if (route.isEmpty) continue;
+        options.add(
+          EvacuationGateOption(
+            kind: kind,
+            score: _routeLength(route),
+            previewRoute: route,
+          ),
+        );
+        continue;
+      }
+
+      final estimate = _estimateUpperFloorGateCost(kind);
+      if (estimate == null) continue;
+      options.add(EvacuationGateOption(kind: kind, score: estimate));
+    }
+
+    options.sort((a, b) {
+      final delta = a.score - b.score;
+      if (delta.abs() > 1e-6) return delta < 0 ? -1 : 1;
+
+      // Stable tie-break only. "Main Gate" is not automatically the main
+      // evacuation route unless both complete estimates are effectively equal.
+      if (a.kind == b.kind) return 0;
+      return a.kind == 'main_gate' ? -1 : 1;
+    });
+    return options;
+  }
+
+  String? recommendedEvacuationGateKind({bool alternative = false}) {
+    final ranked = rankEvacuationGates();
+    final index = alternative ? 1 : 0;
+    if (ranked.length <= index) return null;
+    return ranked[index].kind;
+  }
+
+  double? _estimateUpperFloorGateCost(String kind) {
+    final building = parent;
+    final target = campusGateApproach(kind);
+    if (building == null || target == null || currentFloor <= 1) return null;
+
+    final pathfinder = SameFloorPathfinder(
+      barriers: groundBarriers,
+      playerRadius: collisionRadius,
+      width: scene.width,
+      height: scene.height,
+      preferredAreas: campusPreferredAreas,
+    );
+
+    final clearance = math.max(30.0, collisionRadius + 18.0);
+    final w = building.width;
+    final h = building.height;
+
+    // Sample outside points around the building. This estimates the campus leg
+    // without mutating the live floor/stair state.
+    final localCandidates = <List<double>>[
+      [-clearance, h / 2],
+      [w + clearance, h / 2],
+      [w / 2, -clearance],
+      [w / 2, h + clearance],
+      [-clearance, -clearance],
+      [w + clearance, -clearance],
+      [w + clearance, h + clearance],
+      [-clearance, h + clearance],
+    ];
+
+    var best = double.infinity;
+    for (final local in localCandidates) {
+      final anchor = building.localToWorld(local[0], local[1]);
+      if (anchor[0] < collisionRadius ||
+          anchor[0] > scene.width - collisionRadius ||
+          anchor[1] < collisionRadius ||
+          anchor[1] > scene.height - collisionRadius) {
+        continue;
+      }
+
+      final campusRoute = pathfinder.findPath(anchor, target);
+      if (campusRoute.isEmpty) continue;
+
+      // Indoor distance to the eventual building edge is only an estimate here.
+      // The real Stage 3/4 route remains authoritative during navigation.
+      final indoorEstimate = hypot(markerX - anchor[0], markerY - anchor[1]);
+      final floorPenalty = math.max(0, currentFloor - 1) * 150.0;
+      final score = indoorEstimate + floorPenalty + _routeLength(campusRoute);
+      if (score < best) best = score;
+    }
+
+    if (best.isFinite) return best;
+
+    // Conservative fallback for unusual footprints where every sampled egress
+    // point lands inside geometry. The route will still be validated for real
+    // after reaching Floor 1.
+    return hypot(target[0] - markerX, target[1] - markerY) +
+        math.max(0, currentFloor - 1) * 150.0;
   }
 
   /// Stage 5: find a configured campus evacuation gate.
