@@ -79,6 +79,7 @@ class WorldNavigator {
   final Map<String, StairSection> _sectionsById = {};
 
   late List<Barrier> groundBarriers;
+  late List<PolygonBarrier> campusPreferredAreas;
   late RuntimeIndex<Barrier> groundIndex;
   late RuntimeIndex<MapItem> parentIndex;
   late RuntimeIndex<MapItem> roofIndex;
@@ -100,7 +101,19 @@ class WorldNavigator {
     final parents = scene.buildings();
     final parentBoxes = <(double, double, double, double)>[];
     final roofBoxes = <(double, double, double, double)>[];
-    groundBarriers = barriersFor(scene.floors[campus] ?? []);
+    final campusLayerItems = scene.floors[campus] ?? const <MapItem>[];
+
+    groundBarriers = barriersFor(campusLayerItems);
+    campusPreferredAreas = [
+      for (final item in campusLayerItems)
+        if (item.kind == 'road')
+          PolygonBarrier([
+            item.localToWorld(0, 0),
+            item.localToWorld(item.width, 0),
+            item.localToWorld(item.width, item.height),
+            item.localToWorld(0, item.height),
+          ]),
+    ];
     physicsStep = 4;
 
     for (final parent in parents) {
@@ -268,6 +281,11 @@ class WorldNavigator {
       playerRadius: collisionRadius,
       width: scene.width,
       height: scene.height,
+      // Manual/current-surface campus routing prefers the mapped roads.
+      // Indoor same-floor routing stays unchanged.
+      preferredAreas: parent == null
+          ? campusPreferredAreas
+          : const <PolygonBarrier>[],
     );
     return pathfinder.findPath([markerX, markerY], [targetX, targetY]);
   }
@@ -629,6 +647,7 @@ class WorldNavigator {
       playerRadius: collisionRadius,
       width: scene.width,
       height: scene.height,
+      preferredAreas: campusPreferredAreas,
     );
     return pathfinder.findPath([markerX, markerY], [targetX, targetY]);
   }

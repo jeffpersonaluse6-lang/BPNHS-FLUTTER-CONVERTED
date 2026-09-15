@@ -661,6 +661,22 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     routeStatus = 'Go to stairs: Floor ${leg.sourceFloor} → ${leg.targetFloor}';
   }
 
+  void _consumeReachedRouteWaypoints(List<double> current) {
+    final threshold = (collisionRadius * 2.5).clamp(18.0, 50.0);
+
+    while (routePoints.length > 2) {
+      final next = routePoints[1];
+      final distance = hypot(next[0] - current[0], next[1] - current[1]);
+      if (distance > threshold) break;
+
+      routePoints = <List<double>>[
+        current,
+        for (var i = 2; i < routePoints.length; i++)
+          List<double>.from(routePoints[i]),
+      ];
+    }
+  }
+
   void _updateLiveRoute(double dt) {
     final currentBuildingId = navigator.parent?.id;
 
@@ -847,6 +863,11 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         }
       }
 
+      // Following an already planned evacuation route should be almost free.
+      // Consume reached road waypoints instead of rerunning weighted A* every
+      // time the player gets close to one.
+      _consumeReachedRouteWaypoints(current);
+
       if (routePoints.length >= 2) {
         routePoints = <List<double>>[
           current,
@@ -856,22 +877,20 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       }
 
       _routeRefreshElapsed += dt;
-      final nearNextWaypoint =
-          routePoints.length > 2 &&
-          hypot(
-                routePoints[1][0] - current[0],
-                routePoints[1][1] - current[1],
-              ) <=
-              (collisionRadius * 2.5).clamp(18.0, 50.0);
 
-      if (_routeRefreshElapsed >= 0.25 || nearNextWaypoint) {
-        _routeRefreshElapsed = 0;
-        final refreshed = currentBuildingId == null
-            ? navigator.findSameFloorRoute(destination[0], destination[1])
-            : navigator.findFloor1CampusRoute(destination[0], destination[1]);
-        if (refreshed.isNotEmpty) {
-          routePoints = refreshed;
-        }
+      // Weighted road-aware A* is intentionally more expensive than the old
+      // distance-only route. Refresh evacuation routes much less often while
+      // the map is static; floor/building changes already trigger immediate
+      // reroutes above. This removes the visible 0.25-second FPS spikes.
+      final refreshInterval = _evacuationGateKind != null ? 1.5 : 0.5;
+      if (_routeRefreshElapsed < refreshInterval) return;
+
+      _routeRefreshElapsed = 0;
+      final refreshed = currentBuildingId == null
+          ? navigator.findSameFloorRoute(destination[0], destination[1])
+          : navigator.findFloor1CampusRoute(destination[0], destination[1]);
+      if (refreshed.isNotEmpty) {
+        routePoints = refreshed;
       }
       return;
     }

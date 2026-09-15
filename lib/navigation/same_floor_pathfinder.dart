@@ -14,7 +14,16 @@ class SameFloorPathfinder {
   final double height;
   final double cornerPadding;
 
+  /// Optional walkable regions that should be preferred, such as campus roads.
+  /// They affect route cost only; collision geometry remains authoritative.
+  final List<PolygonBarrier> preferredAreas;
+
+  /// Maximum cost discount for a segment fully inside a preferred area.
+  /// 0.35 means road travel costs 65% of the same off-road distance.
+  final double preferredAreaDiscount;
+
   late final RuntimeIndex<Barrier> _barrierIndex;
+  late final RuntimeIndex<PolygonBarrier>? _preferredAreaIndex;
 
   SameFloorPathfinder({
     required List<Barrier> barriers,
@@ -22,11 +31,24 @@ class SameFloorPathfinder {
     required this.width,
     required this.height,
     this.cornerPadding = 2,
-  }) : barriers = List<Barrier>.unmodifiable(barriers) {
+    List<PolygonBarrier> preferredAreas = const [],
+    this.preferredAreaDiscount = 0.35,
+  }) : assert(
+         preferredAreaDiscount >= 0 && preferredAreaDiscount < 1,
+         'preferredAreaDiscount must be in [0, 1)',
+       ),
+       preferredAreas = List<PolygonBarrier>.unmodifiable(preferredAreas),
+       barriers = List<Barrier>.unmodifiable(barriers) {
     _barrierIndex = RuntimeIndex<Barrier>(
       this.barriers,
       this.barriers.map((b) => b.bounds).toList(),
     );
+    _preferredAreaIndex = this.preferredAreas.isEmpty
+        ? null
+        : RuntimeIndex<PolygonBarrier>(
+            this.preferredAreas,
+            this.preferredAreas.map((area) => area.box).toList(),
+          );
   }
 
   /// Find a collision-free route from [start] to [goal].
@@ -37,7 +59,10 @@ class SameFloorPathfinder {
     if (!_validPoint(start) || !_validPoint(goal)) return const [];
     if (!_pointWalkable(start) || !_pointWalkable(goal)) return const [];
 
-    if (lineIsWalkable(start, goal)) {
+    // With no preference regions the original fast direct-path behavior
+    // is preserved. When roads are configured, A* must be allowed to compare
+    // the direct line against a slightly longer but preferred-road route.
+    if (preferredAreas.isEmpty && lineIsWalkable(start, goal)) {
       return [List<double>.from(start), List<double>.from(goal)];
     }
 
@@ -104,6 +129,34 @@ class SameFloorPathfinder {
       nodes.add(_RoutePoint(x, y));
     }
 
+    // Add navigation candidates inside preferred regions. Roads are
+    // rectangular in the BPNHS map, but this works for any polygon.
+    for (final area in preferredAreas) {
+      if (area.points.length < 3) continue;
+      var cx = 0.0;
+      var cy = 0.0;
+      for (final point in area.points) {
+        cx += point[0];
+        cy += point[1];
+      }
+      cx /= area.points.length;
+      cy /= area.points.length;
+
+      add(cx, cy);
+
+      for (var i = 0; i < area.points.length; i++) {
+        final a = area.points[i];
+        final b = area.points[(i + 1) % area.points.length];
+
+        // Edge midpoint gives the graph useful entry/exit points.
+        add((a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
+
+        // Halfway from each corner to the center stays safely inside the road
+        // and helps long/rotated roads form a usable corridor.
+        add((a[0] + cx) / 2, (a[1] + cy) / 2);
+      }
+    }
+
     for (final barrier in barriers) {
       final dx = barrier.endX - barrier.startX;
       final dy = barrier.endY - barrier.startY;
@@ -159,7 +212,7 @@ class SameFloorPathfinder {
     final heap = _MinHeap();
 
     gScore[0] = 0;
-    fScore[0] = _distance(nodes[0], nodes[1]);
+    fScore[0] = _heuristic(nodes[0], nodes[1]);
     heap.push(_HeapEntry(0, fScore[0]));
 
     while (heap.isNotEmpty) {
@@ -182,8 +235,7 @@ class SameFloorPathfinder {
       }
 
       closed[current] = true;
-      final neighbors =
-          neighborCache[current] ??= _neighbors(current, nodes);
+      final neighbors = neighborCache[current] ??= _neighbors(current, nodes);
       for (final edge in neighbors) {
         final next = edge.index;
         if (closed[next]) continue;
@@ -191,7 +243,7 @@ class SameFloorPathfinder {
         if (tentative + 1e-9 >= gScore[next]) continue;
         cameFrom[next] = current;
         gScore[next] = tentative;
-        fScore[next] = tentative + _distance(nodes[next], nodes[1]);
+        fScore[next] = tentative + _heuristic(nodes[next], nodes[1]);
         heap.push(_HeapEntry(next, fScore[next]));
       }
     }
@@ -212,16 +264,14 @@ class SameFloorPathfinder {
       // candidates in every direction instead of generating all-pairs edges.
       const sectorCount = 24;
       const perSector = 3;
-      final sectors =
-          List.generate(sectorCount, (_) => <_NeighborCandidate>[]);
+      final sectors = List.generate(sectorCount, (_) => <_NeighborCandidate>[]);
 
       for (var i = 0; i < nodes.length; i++) {
         if (i == index) continue;
         final dx = nodes[i].x - source.x;
         final dy = nodes[i].y - source.y;
         final distance2 = dx * dx + dy * dy;
-        var normalized =
-            (math.atan2(dy, dx) + math.pi) / (2 * math.pi);
+        var normalized = (math.atan2(dy, dx) + math.pi) / (2 * math.pi);
         if (normalized >= 1) normalized = 0;
         final sector = (normalized * sectorCount)
             .floor()
@@ -248,13 +298,18 @@ class SameFloorPathfinder {
       final target = nodes[next];
       final b = <double>[target.x, target.y];
       if (!lineIsWalkable(a, b)) continue;
-      result.add(_RouteEdge(next, _distance(source, target)));
+      result.add(_RouteEdge(next, _edgeCost(a, b)));
     }
     return result;
   }
 
   List<List<double>> _simplify(List<List<double>> path) {
     if (path.length <= 2) return path;
+
+    // The normal line-of-sight simplifier would erase a deliberately chosen
+    // road detour by replacing it with a collision-free off-road shortcut.
+    // Keep the weighted A* geometry intact when preferred areas are active.
+    if (preferredAreas.isNotEmpty) return path;
     final simplified = <List<double>>[path.first];
     var anchor = 0;
     while (anchor < path.length - 1) {
@@ -278,9 +333,7 @@ class SameFloorPathfinder {
       point[1],
       padding: playerRadius,
     );
-    return !nearby.any(
-      (b) => b.blocks(point[0], point[1], playerRadius),
-    );
+    return !nearby.any((b) => b.blocks(point[0], point[1], playerRadius));
   }
 
   bool _validPoint(List<double> point) {
@@ -302,6 +355,45 @@ class SameFloorPathfinder {
     final dx = b.x - a.x;
     final dy = b.y - a.y;
     return math.sqrt(dx * dx + dy * dy);
+  }
+
+  double _heuristic(_RoutePoint a, _RoutePoint b) {
+    // Since preferred edges can be discounted, scale Euclidean distance by
+    // the minimum possible multiplier to keep the A* heuristic admissible.
+    return _distance(a, b) * (1 - preferredAreaDiscount);
+  }
+
+  double _edgeCost(List<double> a, List<double> b) {
+    final dx = b[0] - a[0];
+    final dy = b[1] - a[1];
+    final length = math.sqrt(dx * dx + dy * dy);
+    if (length <= 1e-9 || preferredAreas.isEmpty) return length;
+
+    final coverage = _preferredCoverage(a, b);
+    return length * (1 - preferredAreaDiscount * coverage);
+  }
+
+  double _preferredCoverage(List<double> a, List<double> b) {
+    // Sample segment interiors instead of only endpoints. A spatial index keeps
+    // this cheap even when the campus contains many road rectangles.
+    final index = _preferredAreaIndex;
+    if (index == null) return 0;
+
+    const samples = 7;
+    var preferred = 0;
+
+    for (var i = 0; i < samples; i++) {
+      final t = (i + 0.5) / samples;
+      final x = a[0] + (b[0] - a[0]) * t;
+      final y = a[1] + (b[1] - a[1]) * t;
+
+      final nearby = index.query(x, y);
+      if (nearby.any((area) => area.blocks(x, y, 0))) {
+        preferred++;
+      }
+    }
+
+    return preferred / samples;
   }
 
   double _segmentDistance(
@@ -343,8 +435,7 @@ class SameFloorPathfinder {
       final ey = py - ay;
       return math.sqrt(ex * ex + ey * ey);
     }
-    final t = (((px - ax) * dx + (py - ay) * dy) / length2)
-        .clamp(0.0, 1.0);
+    final t = (((px - ax) * dx + (py - ay) * dy) / length2).clamp(0.0, 1.0);
     final qx = ax + t * dx;
     final qy = ay + t * dy;
     final ex = px - qx;
@@ -372,8 +463,7 @@ class SameFloorPathfinder {
       double rx,
       double ry,
     ) {
-      return (qx - px) * (ry - py) -
-          (qy - py) * (rx - px);
+      return (qx - px) * (ry - py) - (qy - py) * (rx - px);
     }
 
     bool onSegment(
@@ -395,26 +485,20 @@ class SameFloorPathfinder {
     final o3 = cross(cx, cy, dx, dy, ax, ay);
     final o4 = cross(cx, cy, dx, dy, bx, by);
 
-    if (((o1 > eps && o2 < -eps) ||
-            (o1 < -eps && o2 > eps)) &&
-        ((o3 > eps && o4 < -eps) ||
-            (o3 < -eps && o4 > eps))) {
+    if (((o1 > eps && o2 < -eps) || (o1 < -eps && o2 > eps)) &&
+        ((o3 > eps && o4 < -eps) || (o3 < -eps && o4 > eps))) {
       return true;
     }
-    if (o1.abs() <= eps &&
-        onSegment(ax, ay, cx, cy, bx, by)) {
+    if (o1.abs() <= eps && onSegment(ax, ay, cx, cy, bx, by)) {
       return true;
     }
-    if (o2.abs() <= eps &&
-        onSegment(ax, ay, dx, dy, bx, by)) {
+    if (o2.abs() <= eps && onSegment(ax, ay, dx, dy, bx, by)) {
       return true;
     }
-    if (o3.abs() <= eps &&
-        onSegment(cx, cy, ax, ay, dx, dy)) {
+    if (o3.abs() <= eps && onSegment(cx, cy, ax, ay, dx, dy)) {
       return true;
     }
-    if (o4.abs() <= eps &&
-        onSegment(cx, cy, bx, by, dx, dy)) {
+    if (o4.abs() <= eps && onSegment(cx, cy, bx, by, dx, dy)) {
       return true;
     }
     return false;
@@ -473,8 +557,7 @@ class _MinHeap {
       if (left >= _items.length) break;
       final right = left + 1;
       var child = left;
-      if (right < _items.length &&
-          _items[right].score < _items[left].score) {
+      if (right < _items.length && _items[right].score < _items[left].score) {
         child = right;
       }
       if (_items[child].score >= last.score) break;
