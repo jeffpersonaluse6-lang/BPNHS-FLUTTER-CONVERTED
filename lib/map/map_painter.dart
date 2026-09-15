@@ -292,10 +292,10 @@ class MapPainter extends CustomPainter {
           start: arcRange.$1, end: arcRange.$2);
       final polyPoints = <List<double>>[];
       for (final p in outer) {
-        polyPoints.add(_wx(p[0] + (item.width - iw) / 2, p[1] + (item.height - ih) / 2, item));
+        polyPoints.add(item.localToWorld(p[0] - radius, p[1] - radius));
       }
       for (var i = inner.length - 1; i >= 0; i--) {
-        polyPoints.add(_wx(inner[i][0] + (item.width - iw) / 2, inner[i][1] + (item.height - ih) / 2, item));
+        polyPoints.add(item.localToWorld(inner[i][0] + (item.width - iw) / 2, inner[i][1] + (item.height - ih) / 2));
       }
       if (polyPoints.length < 3) continue;
       final path = Path()
