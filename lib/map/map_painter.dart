@@ -62,10 +62,11 @@ class MapPainter extends CustomPainter {
       if (item.kind == 'building' || item.kind == 'entry_zone') continue;
       _ft = null;
       _scale = 1;
-      _layerOpacity = 1;
       if (roofKinds.contains(item.kind)) {
+        _layerOpacity = _roofObjectOpacity(item, null);
         _renderItem(canvas, item, null);
       } else {
+        _layerOpacity = 1;
         _renderItem(canvas, item, campusIndex.forWall(item));
       }
     }
@@ -119,10 +120,11 @@ class MapPainter extends CustomPainter {
         if (item.kind == 'entry_zone') continue;
         _ft = ft;
         _scale = bscale;
-        _layerOpacity = opacity;
         if (roofKinds.contains(item.kind)) {
+          _layerOpacity = _roofObjectOpacity(item, building);
           _renderItem(canvas, item, null);
         } else {
+          _layerOpacity = opacity;
           _renderItem(canvas, item, floorIndex.forWall(item));
         }
       }
@@ -135,10 +137,11 @@ class MapPainter extends CustomPainter {
       for (final item in roofItems) {
         _ft = ft;
         _scale = bscale;
-        _layerOpacity = roofOp;
         if (roofKinds.contains(item.kind)) {
+          _layerOpacity = _roofObjectOpacity(item, building);
           _renderItem(canvas, item, null);
         } else {
+          _layerOpacity = roofOp;
           _renderItem(canvas, item, roofIndex.forWall(item));
         }
       }
@@ -175,6 +178,58 @@ class MapPainter extends CustomPainter {
     final fw = parent.floorWidth ?? _defaultFloorWidth;
     final fh = parent.floorHeight ?? _defaultFloorHeight;
     return (parent.width / fw, parent.height / fh);
+  }
+
+  double _roofObjectOpacity(MapItem item, MapItem? parent) {
+    if (!item.fadeWhenObstructing) return item.opacity;
+
+    final List<List<double>> points;
+    if (item.kind == 'gazebo_roof') {
+      points = ellipsePoints(item.width, item.height);
+    } else {
+      points = [
+        [0, 0],
+        [item.width, 0],
+        [item.width, item.height],
+        [0, item.height]
+      ];
+    }
+
+    final worldPoints = <List<double>>[];
+    for (final p in points) {
+      worldPoints.add(_wx(p[0], p[1], item));
+    }
+
+    final area = PolygonBarrier(worldPoints);
+    final px = playerCenter[0];
+    final py = playerCenter[1];
+
+    final distance = _polygonDistance(area, px, py);
+    final factor = item.approachDistance > 0
+        ? math.min(1.0, distance / item.approachDistance)
+        : (distance > 0 ? 1.0 : 0.0);
+
+    return item.opacity * factor;
+  }
+
+  double _polygonDistance(PolygonBarrier area, double px, double py) {
+    if (area.blocks(px, py, 0)) return 0;
+    double best = double.infinity;
+    var prev = area.points.last;
+    for (final current in area.points) {
+      final dx = current[0] - prev[0];
+      final dy = current[1] - prev[1];
+      final length2 = dx * dx + dy * dy;
+      final t = length2 > 0
+          ? math.max(0.0, math.min(1.0,
+              ((px - prev[0]) * dx + (py - prev[1]) * dy) / length2))
+          : 0.0;
+      best = math.min(
+          best,
+          hypot(px - prev[0] - t * dx, py - prev[1] - t * dy));
+      prev = current;
+    }
+    return best;
   }
 
   void _renderItem(Canvas canvas, MapItem item, List<MapItem>? openings) {
@@ -292,10 +347,10 @@ class MapPainter extends CustomPainter {
           start: arcRange.$1, end: arcRange.$2);
       final polyPoints = <List<double>>[];
       for (final p in outer) {
-        polyPoints.add(item.localToWorld(p[0] - radius, p[1] - radius));
+        polyPoints.add(_wx(p[0] - radius, p[1] - radius, item));
       }
       for (var i = inner.length - 1; i >= 0; i--) {
-        polyPoints.add(item.localToWorld(inner[i][0] + (item.width - iw) / 2, inner[i][1] + (item.height - ih) / 2));
+        polyPoints.add(_wx(inner[i][0] + (item.width - iw) / 2, inner[i][1] + (item.height - ih) / 2, item));
       }
       if (polyPoints.length < 3) continue;
       final path = Path()
