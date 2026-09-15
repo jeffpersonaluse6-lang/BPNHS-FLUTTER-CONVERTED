@@ -39,22 +39,29 @@ class _MapLoaderScreenState extends State<MapLoaderScreen> {
   @override
   void initState() {
     super.initState();
-    _loadMap();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadMap();
+    });
   }
 
   Future<void> _loadMap() async {
     try {
+      final bundle = DefaultAssetBundle.of(context);
       final scene = await MapScene.loadFromAssets(
-        DefaultAssetBundle.of(context),
+        bundle,
         'assets/map_workspace.json',
       );
-      setState(() {
-        _scene = scene;
-      });
+      if (mounted) {
+        setState(() {
+          _scene = scene;
+        });
+      }
     } catch (e) {
-      setState(() {
-        _error = 'Failed to load map: $e';
-      });
+      if (mounted) {
+        setState(() {
+          _error = 'Failed to load map: $e';
+        });
+      }
     }
   }
 

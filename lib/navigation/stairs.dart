@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import '../models/map_item.dart';
 
 /// StairSection — matches Python StairSection from navigation/stairs.py.

@@ -4,30 +4,42 @@ import '../models/map_item.dart';
 import '../models/map_scene.dart';
 import '../models/math_helper.dart';
 import '../navigation/collision.dart';
+import '../navigation/floor_transform.dart';
 import '../navigation/world_navigator.dart';
 
-/// MapPainter — CustomPainter that renders the entire campus scene.
 class MapPainter extends CustomPainter {
   final MapScene scene;
   final WorldNavigator navigator;
+  final double cameraX;
+  final double cameraY;
+  final double cameraScale;
+  final double cameraRotation;
   final List<double> playerCenter;
   final double playerSize;
   final double collisionRadius;
-  final Set<String> fadedRoofs;
-  final Map<int, double> floorOpacities;
 
   MapPainter({
     required this.scene,
     required this.navigator,
+    this.cameraX = 0,
+    this.cameraY = 0,
+    this.cameraScale = 1,
+    this.cameraRotation = 0,
     required this.playerCenter,
     this.playerSize = 20,
     this.collisionRadius = 26,
-    this.fadedRoofs = const {},
-    this.floorOpacities = const {},
   });
+
+  FloorTransform? _currentParentTransform;
 
   @override
   void paint(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.translate(size.width / 2, size.height / 2);
+    canvas.scale(cameraScale);
+    canvas.rotate(cameraRotation);
+    canvas.translate(-cameraX, -cameraY);
+
     final paint = Paint();
 
     paint.color = const Color(0xFFEDF8FA);
@@ -38,12 +50,22 @@ class MapPainter extends CustomPainter {
     for (final item in campusItems) {
       if (item.kind == 'building') continue;
       if (item.kind == 'entry_zone') continue;
-      _renderItem(canvas, item, null, 1.0);
+      _currentParentTransform = null;
+      _renderItem(canvas, item, 1.0);
     }
 
     final buildings = scene.buildings();
     for (final building in buildings) {
       final opacities = navigator.floorOpacities(building);
+      final ft = navigator.floorTransform(building);
+
+      paint
+        ..color = Colors.white
+        ..style = PaintingStyle.fill;
+      canvas.drawRect(
+        Rect.fromLTWH(building.x, building.y, building.width, building.height),
+        paint,
+      );
 
       for (var floor = 1; floor <= building.floorCount; floor++) {
         final opacity = opacities[floor] ?? 0;
@@ -51,22 +73,26 @@ class MapPainter extends CustomPainter {
         final items = scene.floorItems(building.id, floor);
         for (final item in items) {
           if (item.kind == 'entry_zone') continue;
-          _renderItem(canvas, item, building, opacity);
+          _currentParentTransform = ft;
+          _renderItem(canvas, item, opacity);
         }
       }
 
       final roofItems = scene.roofItems(building.id);
-      final roofOpacity = opacities[building.floorCount] ?? 1.0;
+      final roofOp = navigator.roofOpacity(
+          building, navigator.markerX, navigator.markerY);
       for (final item in roofItems) {
-        _renderItem(canvas, item, building, roofOpacity);
+        _currentParentTransform = ft;
+        _renderItem(canvas, item, roofOp);
       }
 
-      paint.color = Colors.white;
-      paint.style = PaintingStyle.fill;
-      canvas.drawRect(
-        Rect.fromLTWH(building.x, building.y, building.width, building.height),
-        paint,
-      );
+      paint
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = building.stroke
+        ..color = _parseColor(building.color)
+            .withOpacity((opacities[1] ?? 1) * building.opacity);
+      _currentParentTransform = null;
+      _drawBuildingOutline(canvas, building, paint);
     }
 
     for (final item in campusItems) {
@@ -74,29 +100,35 @@ class MapPainter extends CustomPainter {
       _renderEntryZone(canvas, item, paint);
     }
 
-    // Collision preview
+    canvas.restore();
+
     paint
       ..color = const Color(0x1606B6D4)
       ..style = PaintingStyle.fill;
     canvas.drawCircle(
-        Offset(playerCenter[0], playerCenter[1]), collisionRadius, paint);
+        Offset(size.width / 2, size.height / 2), collisionRadius, paint);
     paint
       ..color = const Color(0xFF06B6D4)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
     canvas.drawCircle(
-        Offset(playerCenter[0], playerCenter[1]), collisionRadius, paint);
+        Offset(size.width / 2, size.height / 2), collisionRadius, paint);
 
-    // Player
     paint
       ..color = const Color(0xFF155EEF)
       ..style = PaintingStyle.fill;
     canvas.drawCircle(
-        Offset(playerCenter[0], playerCenter[1]), playerSize / 2, paint);
+        Offset(size.width / 2, size.height / 2), playerSize / 2, paint);
   }
 
-  void _renderItem(
-      Canvas canvas, MapItem item, MapItem? parent, double opacity) {
+  List<double> _wx(double lx, double ly, MapItem item) {
+    final world = item.localToWorld(lx, ly);
+    final ft = _currentParentTransform;
+    if (ft != null) return ft.project(world[0], world[1]);
+    return world;
+  }
+
+  void _renderItem(Canvas canvas, MapItem item, double opacity) {
     final paint = Paint();
     paint.color = _parseColor(item.color).withOpacity(opacity * item.opacity);
 
@@ -130,16 +162,14 @@ class MapPainter extends CustomPainter {
         _renderCourtRoof(canvas, item, paint, opacity);
       case 'roof':
         _renderRoof(canvas, item, paint, opacity);
-      case 'building':
-        _renderBuilding(canvas, item, paint, opacity);
       default:
         break;
     }
   }
 
   void _renderWall(Canvas canvas, MapItem item, Paint paint, double opacity) {
-    final a = item.localToWorld(0, 0);
-    final b = item.localToWorld(item.width, item.height);
+    final a = _wx(0, 0, item);
+    final b = _wx(item.width, item.height, item);
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = item.stroke
@@ -148,10 +178,10 @@ class MapPainter extends CustomPainter {
   }
 
   void _renderRoom(Canvas canvas, MapItem item, Paint paint, double opacity) {
-    final p0 = item.localToWorld(0, 0);
-    final p1 = item.localToWorld(item.width, 0);
-    final p2 = item.localToWorld(item.width, item.height);
-    final p3 = item.localToWorld(0, item.height);
+    final p0 = _wx(0, 0, item);
+    final p1 = _wx(item.width, 0, item);
+    final p2 = _wx(item.width, item.height, item);
+    final p3 = _wx(0, item.height, item);
 
     final path = Path()
       ..moveTo(p0[0], p0[1])
@@ -183,10 +213,10 @@ class MapPainter extends CustomPainter {
       if (points.length < 2) continue;
 
       final path = Path();
-      final first = item.localToWorld(points[0][0], points[0][1]);
+      final first = _wx(points[0][0], points[0][1], item);
       path.moveTo(first[0], first[1]);
       for (var i = 1; i < points.length; i++) {
-        final p = item.localToWorld(points[i][0], points[i][1]);
+        final p = _wx(points[i][0], points[i][1], item);
         path.lineTo(p[0], p[1]);
       }
       if (arcRange.$2 - arcRange.$1 >= 2 * math.pi - 1e-9) path.close();
@@ -208,8 +238,8 @@ class MapPainter extends CustomPainter {
 
   void _renderRailing(
       Canvas canvas, MapItem item, Paint paint, double opacity) {
-    final a = item.localToWorld(0, 0);
-    final b = item.localToWorld(item.width, item.height);
+    final a = _wx(0, 0, item);
+    final b = _wx(item.width, item.height, item);
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = item.stroke
@@ -225,18 +255,18 @@ class MapPainter extends CustomPainter {
     for (var i = 0; i <= count; i++) {
       final lx = item.width * i / count;
       final ly = item.height * i / count;
-      final pa = item.localToWorld(lx - nx * 3, ly - ny * 3);
-      final pb = item.localToWorld(lx + nx * 3, ly + ny * 3);
+      final pa = _wx(lx - nx * 3, ly - ny * 3, item);
+      final pb = _wx(lx + nx * 3, ly + ny * 3, item);
       canvas.drawLine(Offset(pa[0], pa[1]), Offset(pb[0], pb[1]), paint);
     }
   }
 
   void _renderStairs(
       Canvas canvas, MapItem item, Paint paint, double opacity) {
-    final p0 = item.localToWorld(0, 0);
-    final p1 = item.localToWorld(item.width, 0);
-    final p2 = item.localToWorld(item.width, item.height);
-    final p3 = item.localToWorld(0, item.height);
+    final p0 = _wx(0, 0, item);
+    final p1 = _wx(item.width, 0, item);
+    final p2 = _wx(item.width, item.height, item);
+    final p3 = _wx(0, item.height, item);
     paint
       ..style = PaintingStyle.fill
       ..color = Colors.white.withOpacity(opacity * item.opacity);
@@ -258,10 +288,10 @@ class MapPainter extends CustomPainter {
 
       final ty = item.height * i / item.steps;
       final ty2 = item.height * (i + 1) / item.steps;
-      final sp0 = item.localToWorld(0, ty);
-      final sp1 = item.localToWorld(item.width, ty);
-      final sp2 = item.localToWorld(item.width, ty2);
-      final sp3 = item.localToWorld(0, ty2);
+      final sp0 = _wx(0, ty, item);
+      final sp1 = _wx(item.width, ty, item);
+      final sp2 = _wx(item.width, ty2, item);
+      final sp3 = _wx(0, ty2, item);
       canvas.drawPath(
           Path()
             ..moveTo(sp0[0], sp0[1])
@@ -278,23 +308,23 @@ class MapPainter extends CustomPainter {
       ..color = _parseColor(item.color).withOpacity(opacity * item.opacity);
     for (var i = 1; i < item.steps; i++) {
       final y = item.height * i / item.steps;
-      final la = item.localToWorld(0, y);
-      final lb = item.localToWorld(item.width, y);
+      final la = _wx(0, y, item);
+      final lb = _wx(item.width, y, item);
       canvas.drawLine(Offset(la[0], la[1]), Offset(lb[0], lb[1]), paint);
     }
   }
 
   void _renderDoor(
       Canvas canvas, MapItem item, Paint paint, double opacity) {
-    final a = item.localToWorld(0, item.height);
-    final b = item.localToWorld(item.width, item.height);
+    final a = _wx(0, item.height, item);
+    final b = _wx(item.width, item.height, item);
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = math.max(8, item.stroke + 6)
       ..color = Colors.white.withOpacity(opacity);
     canvas.drawLine(Offset(a[0], a[1]), Offset(b[0], b[1]), paint);
 
-    final c = item.localToWorld(0, 0);
+    final c = _wx(0, 0, item);
     paint
       ..strokeWidth = item.stroke
       ..color = _parseColor(item.color).withOpacity(opacity * item.opacity);
@@ -303,9 +333,10 @@ class MapPainter extends CustomPainter {
     final arcPath = Path()..moveTo(a[0], a[1]);
     for (var t = 0; t <= 32; t++) {
       final angle = t * math.pi / 32;
-      final p = item.localToWorld(
+      final p = _wx(
           item.width * math.cos(angle),
-          item.height - item.height * math.sin(angle));
+          item.height - item.height * math.sin(angle),
+          item);
       arcPath.lineTo(p[0], p[1]);
     }
     paint..style = PaintingStyle.stroke..strokeWidth = item.stroke;
@@ -323,15 +354,15 @@ class MapPainter extends CustomPainter {
     final sign = mirror ? -1.0 : 1.0;
     final h = item.height;
 
-    final a = item.localToWorld(hinge, h);
-    final b = item.localToWorld(hinge + sign * radius, h);
+    final a = _wx(hinge, h, item);
+    final b = _wx(hinge + sign * radius, h, item);
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = math.max(8, item.stroke + 6)
       ..color = Colors.white.withOpacity(opacity);
     canvas.drawLine(Offset(a[0], a[1]), Offset(b[0], b[1]), paint);
 
-    final c = item.localToWorld(hinge, 0);
+    final c = _wx(hinge, 0, item);
     paint
       ..strokeWidth = item.stroke
       ..color = _parseColor(item.color).withOpacity(opacity * item.opacity);
@@ -340,8 +371,8 @@ class MapPainter extends CustomPainter {
     final arcPath = Path()..moveTo(a[0], a[1]);
     for (var t = 0; t <= 32; t++) {
       final angle = t * math.pi / 32;
-      final p = item.localToWorld(
-          hinge + sign * radius * math.cos(angle), h - h * math.sin(angle));
+      final p = _wx(
+          hinge + sign * radius * math.cos(angle), h - h * math.sin(angle), item);
       arcPath.lineTo(p[0], p[1]);
     }
     paint..style = PaintingStyle.stroke..strokeWidth = item.stroke;
@@ -350,10 +381,10 @@ class MapPainter extends CustomPainter {
 
   void _renderOpening(
       Canvas canvas, MapItem item, Paint paint, double opacity) {
-    final p0 = item.localToWorld(0, 0);
-    final p1 = item.localToWorld(item.width, 0);
-    final p2 = item.localToWorld(item.width, item.height);
-    final p3 = item.localToWorld(0, item.height);
+    final p0 = _wx(0, 0, item);
+    final p1 = _wx(item.width, 0, item);
+    final p2 = _wx(item.width, item.height, item);
+    final p3 = _wx(0, item.height, item);
     paint
       ..style = PaintingStyle.fill
       ..color = Colors.white.withOpacity(opacity * item.opacity);
@@ -369,10 +400,10 @@ class MapPainter extends CustomPainter {
 
   void _renderWindow(
       Canvas canvas, MapItem item, Paint paint, double opacity) {
-    final p0 = item.localToWorld(0, 0);
-    final p1 = item.localToWorld(item.width, 0);
-    final p2 = item.localToWorld(item.width, item.height);
-    final p3 = item.localToWorld(0, item.height);
+    final p0 = _wx(0, 0, item);
+    final p1 = _wx(item.width, 0, item);
+    final p2 = _wx(item.width, item.height, item);
+    final p3 = _wx(0, item.height, item);
     paint
       ..style = PaintingStyle.fill
       ..color = Colors.white.withOpacity(opacity * item.opacity);
@@ -385,8 +416,8 @@ class MapPainter extends CustomPainter {
           ..close(),
         paint);
 
-    final midA = item.localToWorld(0, item.height / 2);
-    final midB = item.localToWorld(item.width, item.height / 2);
+    final midA = _wx(0, item.height / 2, item);
+    final midB = _wx(item.width, item.height / 2, item);
     paint
       ..style = PaintingStyle.stroke
       ..strokeWidth = item.stroke
@@ -433,10 +464,10 @@ class MapPainter extends CustomPainter {
 
   Path _quad(MapItem item, double x0, double y0, double x1, double y1,
       double x2, double y2, double x3, double y3) {
-    final p0 = item.localToWorld(x0, y0);
-    final p1 = item.localToWorld(x1, y1);
-    final p2 = item.localToWorld(x2, y2);
-    final p3 = item.localToWorld(x3, y3);
+    final p0 = _wx(x0, y0, item);
+    final p1 = _wx(x1, y1, item);
+    final p2 = _wx(x2, y2, item);
+    final p3 = _wx(x3, y3, item);
     return Path()
       ..moveTo(p0[0], p0[1])
       ..lineTo(p1[0], p1[1])
@@ -447,8 +478,8 @@ class MapPainter extends CustomPainter {
 
   void _drawLine(MapItem item, double x0, double y0, double x1, double y1,
       Canvas canvas, Paint paint) {
-    final a = item.localToWorld(x0, y0);
-    final b = item.localToWorld(x1, y1);
+    final a = _wx(x0, y0, item);
+    final b = _wx(x1, y1, item);
     canvas.drawLine(Offset(a[0], a[1]), Offset(b[0], b[1]), paint);
   }
 
@@ -465,10 +496,10 @@ class MapPainter extends CustomPainter {
       final arcPoints = ellipsePointPairs(w, h,
           start: n * math.pi / 4, end: (n + 1) * math.pi / 4);
       if (arcPoints.isEmpty) continue;
-      final center = item.localToWorld(w / 2, h / 2);
+      final center = _wx(w / 2, h / 2, item);
       final path = Path()..moveTo(center[0], center[1]);
       for (final p in arcPoints) {
-        final wp = item.localToWorld(p.$1, p.$2);
+        final wp = _wx(p.$1, p.$2, item);
         path.lineTo(wp[0], wp[1]);
       }
       path.close();
@@ -551,13 +582,20 @@ class MapPainter extends CustomPainter {
     }
   }
 
-  void _renderBuilding(
-      Canvas canvas, MapItem item, Paint paint, double opacity) {
-    paint
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = item.stroke
-      ..color = _parseColor(item.color).withOpacity(opacity * item.opacity);
-    canvas.drawPath(_quad(item, 0, 0, item.width, 0, item.width, item.height, 0, item.height), paint);
+  void _drawBuildingOutline(
+      Canvas canvas, MapItem item, Paint paint) {
+    final p0 = _wx(0, 0, item);
+    final p1 = _wx(item.width, 0, item);
+    final p2 = _wx(item.width, item.height, item);
+    final p3 = _wx(0, item.height, item);
+    canvas.drawPath(
+        Path()
+          ..moveTo(p0[0], p0[1])
+          ..lineTo(p1[0], p1[1])
+          ..lineTo(p2[0], p2[1])
+          ..lineTo(p3[0], p3[1])
+          ..close(),
+        paint);
   }
 
   void _renderEntryZone(Canvas canvas, MapItem item, Paint paint) {
@@ -572,10 +610,10 @@ class MapPainter extends CustomPainter {
     final points = ellipsePointPairs(w, h);
     if (points.isEmpty) return;
     final path = Path();
-    final first = item.localToWorld(points[0].$1, points[0].$2);
+    final first = _wx(points[0].$1, points[0].$2, item);
     path.moveTo(first[0], first[1]);
     for (var i = 1; i < points.length; i++) {
-      final p = item.localToWorld(points[i].$1, points[i].$2);
+      final p = _wx(points[i].$1, points[i].$2, item);
       path.lineTo(p[0], p[1]);
     }
     path.close();
@@ -598,10 +636,12 @@ class MapPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant MapPainter oldDelegate) {
-    return oldDelegate.playerCenter[0] != playerCenter[0] ||
+    return oldDelegate.cameraX != cameraX ||
+        oldDelegate.cameraY != cameraY ||
+        oldDelegate.cameraScale != cameraScale ||
+        oldDelegate.cameraRotation != cameraRotation ||
+        oldDelegate.playerCenter[0] != playerCenter[0] ||
         oldDelegate.playerCenter[1] != playerCenter[1] ||
-        oldDelegate.playerSize != playerSize ||
-        oldDelegate.fadedRoofs != fadedRoofs ||
-        oldDelegate.floorOpacities != floorOpacities;
+        oldDelegate.playerSize != playerSize;
   }
 }

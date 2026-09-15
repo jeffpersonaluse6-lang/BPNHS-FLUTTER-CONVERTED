@@ -1,7 +1,6 @@
 import 'dart:math' as math;
 import '../models/map_item.dart';
 import '../models/map_scene.dart';
-import '../models/spatial_index.dart';
 import '../models/math_helper.dart';
 import 'collision.dart';
 import 'stairs.dart';
@@ -142,6 +141,10 @@ class WorldNavigator {
     );
     parentIndex = RuntimeIndex(parents, parentBoxes);
     roofIndex = RuntimeIndex(parents, roofBoxes);
+  }
+
+  FloorTransform floorTransform(MapItem building) {
+    return _transforms[building.id] ?? FloorTransform.build(building);
   }
 
   (double, double, double, double) _parentBoundingBox(MapItem parent) {

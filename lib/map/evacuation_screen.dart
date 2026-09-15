@@ -1,7 +1,5 @@
 import 'dart:async';
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import '../models/map_scene.dart';
 import '../models/math_helper.dart';
 import '../camera/smooth_camera.dart';
@@ -130,21 +128,21 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                           child: GestureDetector(
                             onScaleStart: _onScaleStart,
                             onScaleUpdate: _onScaleUpdate,
-                            child: CustomPaint(
-                              painter: MapPainter(
-                                scene: widget.scene,
-                                navigator: navigator,
-                                playerCenter: [
-                                  navigator.markerX,
-                                  navigator.markerY,
-                                ],
-                                playerSize: playerSize,
-                                collisionRadius: collisionRadius,
-                                fadedRoofs: fadedRoofs,
-                                floorOpacities: navigator.parent != null
-                                    ? navigator.floorOpacities(navigator.parent!)
-                                    : {},
-                              ),
+                    child: CustomPaint(
+                      painter: MapPainter(
+                        scene: widget.scene,
+                        navigator: navigator,
+                        cameraX: camera.x,
+                        cameraY: camera.y,
+                        cameraScale: camera.scale,
+                        cameraRotation: camera.rotation,
+                        playerCenter: [
+                          navigator.markerX,
+                          navigator.markerY,
+                        ],
+                        playerSize: playerSize,
+                        collisionRadius: collisionRadius,
+                      ),
                               size: Size.infinite,
                             ),
                           ),
