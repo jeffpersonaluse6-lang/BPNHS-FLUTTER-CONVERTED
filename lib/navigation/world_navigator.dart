@@ -34,10 +34,7 @@ class StairRouteLeg {
   final StairSection section;
   final List<List<double>> path;
 
-  const StairRouteLeg({
-    required this.section,
-    required this.path,
-  });
+  const StairRouteLeg({required this.section, required this.path});
 
   int get sourceFloor => section.source;
   int get targetFloor => section.target;
@@ -75,7 +72,7 @@ class WorldNavigator {
   final Map<String, FloorTransform> _transforms = {};
 
   final Map<String, (List<Barrier>, (double, double, double, double))>
-      _colliders = {};
+  _colliders = {};
   final Map<String, RuntimeIndex<Barrier>> _collisionIndices = {};
   final Map<String, List<StairSection>> _connections = {};
   final Map<String, RuntimeIndex<StairSection>> _sectionIndices = {};
@@ -88,7 +85,8 @@ class WorldNavigator {
 
   double physicsStep = 1;
 
-  WorldNavigator(this.scene, {
+  WorldNavigator(
+    this.scene, {
     this.markerX = 1510,
     this.markerY = 620,
     this.collisionRadius = 26,
@@ -118,7 +116,7 @@ class WorldNavigator {
         (0.0, 0.0),
         (parent.width, 0.0),
         (parent.width, parent.height),
-        (0.0, parent.height)
+        (0.0, parent.height),
       ]) {
         footprintPoints.add(parent.localToWorld(lx, ly));
       }
@@ -129,8 +127,9 @@ class WorldNavigator {
           .where((i) => i.kind == 'entry_zone' && i.parentId == parent.id)
           .toList();
       final floor1Items = scene.floorItems(parent.id, 1);
-      final floor1Zones =
-          floor1Items.where((i) => i.kind == 'entry_zone').toList();
+      final floor1Zones = floor1Items
+          .where((i) => i.kind == 'entry_zone')
+          .toList();
 
       final entryAreaList = <PolygonBarrier>[footprint];
       final roofAreaList = <PolygonBarrier>[];
@@ -141,7 +140,7 @@ class WorldNavigator {
           (0.0, 0.0),
           (zone.width, 0.0),
           (zone.width, zone.height),
-          (0.0, zone.height)
+          (0.0, zone.height),
         ]) {
           points.add(zone.localToWorld(lx, ly));
         }
@@ -156,7 +155,7 @@ class WorldNavigator {
           (0.0, 0.0),
           (zone.width, 0.0),
           (zone.width, zone.height),
-          (0.0, zone.height)
+          (0.0, zone.height),
         ]) {
           final w = zone.localToWorld(lx, ly);
           points.add(transform.project(w[0], w[1]));
@@ -167,7 +166,9 @@ class WorldNavigator {
       }
 
       _entryAreas[parent.id] = entryAreaList;
-      _roofAreas[parent.id] = roofAreaList.isNotEmpty ? roofAreaList : [footprint];
+      _roofAreas[parent.id] = roofAreaList.isNotEmpty
+          ? roofAreaList
+          : [footprint];
 
       double minX = double.infinity,
           minY = double.infinity,
@@ -191,8 +192,9 @@ class WorldNavigator {
       for (var floor = 1; floor <= parent.floorCount; floor++) {
         final key = '${parent.id}:$floor';
         final items = scene.floorItems(parent.id, floor);
-        final stairItems =
-            items.where((i) => stairKinds.contains(i.kind)).toList();
+        final stairItems = items
+            .where((i) => stairKinds.contains(i.kind))
+            .toList();
         final stairSections = <StairSection>[];
         for (final stair in stairItems) {
           stairSections.addAll(transitions(stair, floor, parent.floorCount));
@@ -243,7 +245,6 @@ class WorldNavigator {
     return _transforms[building.id] ?? FloorTransform.build(building);
   }
 
-
   /// Stage 1 auto-pathing: route on the player's current surface only.
   ///
   /// Stairs/multi-floor routing are deliberately deferred to the next stage.
@@ -268,10 +269,7 @@ class WorldNavigator {
       width: scene.width,
       height: scene.height,
     );
-    return pathfinder.findPath(
-      [markerX, markerY],
-      [targetX, targetY],
-    );
+    return pathfinder.findPath([markerX, markerY], [targetX, targetY]);
   }
 
   /// Stage 3: choose a reachable staircase on the current floor that moves the
@@ -322,10 +320,10 @@ class WorldNavigator {
         // A* only needs to reach the source-side entrance of the staircase.
         // From there, append the staircase lane itself. This prevents the blue
         // route from taking a diagonal shortcut through the stair graphic.
-        final approach = pathfinder.findPath(
-          [markerX, markerY],
-          stairLane.first,
-        );
+        final approach = pathfinder.findPath([
+          markerX,
+          markerY,
+        ], stairLane.first);
         if (approach.isEmpty) continue;
 
         final path = <List<double>>[
@@ -334,8 +332,11 @@ class WorldNavigator {
         ];
 
         final walkingCost = _routeLength(path);
-        final remainingHops =
-            _floorHopDistance(building.id, section.target, targetFloor);
+        final remainingHops = _floorHopDistance(
+          building.id,
+          section.target,
+          targetFloor,
+        );
         if (remainingHops == null) continue;
 
         final cost = walkingCost + remainingHops * 150.0;
@@ -361,8 +362,7 @@ class WorldNavigator {
     var cursor = 0;
     while (cursor < queue.length) {
       final (floor, hops) = queue[cursor++];
-      final next =
-          _connections['$buildingId:$floor'] ?? const <StairSection>[];
+      final next = _connections['$buildingId:$floor'] ?? const <StairSection>[];
       for (final section in next) {
         if (!visited.add(section.target)) continue;
         if (section.target == target) return hops + 1;
@@ -395,7 +395,9 @@ class WorldNavigator {
   }
 
   List<List<List<double>>> _stairLaneRoutes(
-      MapItem building, StairSection section) {
+    MapItem building,
+    StairSection section,
+  ) {
     final preferredLane = section.direction == 'down' ? 0.78 : 0.22;
     final laneFactors = section.direction == 'down'
         ? <double>[preferredLane, 0.72, 0.84]
@@ -405,13 +407,7 @@ class WorldNavigator {
     // Start just inside the source side so the existing stair activator can
     // arm normally, then follow the stair longitudinally to the transition
     // completion level. These are progress levels, not fixed map coordinates.
-    final rawLevels = <double>[
-      0.035,
-      0.25,
-      0.50,
-      0.75,
-      completion,
-    ];
+    final rawLevels = <double>[0.035, 0.25, 0.50, 0.75, completion];
 
     return [
       for (final lane in laneFactors)
@@ -480,14 +476,16 @@ class WorldNavigator {
 
     final preferredRight = section.direction == 'down';
     final clearance = math.max(14.0, collisionRadius + 8.0);
-    final sourceRaw = -math.max(0.10, clearance / math.max(1.0, section.height));
-    final targetRaw = 1.0 + math.max(0.10, clearance / math.max(1.0, section.height));
+    final sourceRaw = -math.max(
+      0.10,
+      clearance / math.max(1.0, section.height),
+    );
+    final targetRaw =
+        1.0 + math.max(0.10, clearance / math.max(1.0, section.height));
     final lane = section.direction == 'down' ? 0.78 : 0.22;
 
     List<List<double>> buildGuide(bool rightSide) {
-      final outsideX = rightSide
-          ? section.width + clearance
-          : -clearance;
+      final outsideX = rightSide ? section.width + clearance : -clearance;
       final sourceY = section.direction == 'up'
           ? section.height * (1 - sourceRaw)
           : section.height * sourceRaw;
@@ -543,11 +541,7 @@ class WorldNavigator {
     final transform =
         _transforms[building.id] ?? FloorTransform.build(building);
     final floorLocal = transform.unproject(markerX, markerY);
-    final raw = sectionProgress(
-      section,
-      floorLocal[0],
-      floorLocal[1],
-    ).$3;
+    final raw = sectionProgress(section, floorLocal[0], floorLocal[1]).$3;
 
     // We are safely beyond the source side of the old activator. At this point
     // the next stair leg can start from raw ~= 0 in the correct direction.
@@ -557,12 +551,64 @@ class WorldNavigator {
   double _routeLength(List<List<double>> path) {
     double total = 0;
     for (var i = 1; i < path.length; i++) {
-      total += hypot(
-        path[i][0] - path[i - 1][0],
-        path[i][1] - path[i - 1][1],
-      );
+      total += hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
     }
     return total;
+  }
+
+  /// Stage 5: find a configured campus evacuation gate.
+  MapItem? campusGate(String kind) {
+    if (kind != 'main_gate' && kind != 'secondary_gate') return null;
+    for (final item in scene.floors[campus] ?? const <MapItem>[]) {
+      if (item.kind == kind) return item;
+    }
+    return null;
+  }
+
+  /// Returns a walkable point immediately INSIDE the campus side of a gate.
+  List<double>? campusGateApproach(String kind) {
+    final gate = campusGate(kind);
+    if (gate == null) return null;
+
+    final clearance = math.max(
+      18.0,
+      collisionRadius + math.max(8.0, gate.stroke / 2 + 6.0),
+    );
+
+    final a = gate.localToWorld(gate.width / 2, -clearance);
+    final b = gate.localToWorld(gate.width / 2, gate.height + clearance);
+
+    final cx = scene.width / 2;
+    final cy = scene.height / 2;
+
+    bool inBounds(List<double> p) =>
+        p[0] >= collisionRadius &&
+        p[0] <= scene.width - collisionRadius &&
+        p[1] >= collisionRadius &&
+        p[1] <= scene.height - collisionRadius;
+
+    double centerDistance(List<double> p) => hypot(p[0] - cx, p[1] - cy);
+
+    final aValid = inBounds(a);
+    final bValid = inBounds(b);
+    if (aValid && !bValid) return a;
+    if (bValid && !aValid) return b;
+    return centerDistance(a) <= centerDistance(b) ? a : b;
+  }
+
+  /// Route the current Campus/Floor-1 position to a campus evacuation gate.
+  List<List<double>> findCampusGateRoute(String kind) {
+    final target = campusGateApproach(kind);
+    if (target == null || transition != null) {
+      return const <List<double>>[];
+    }
+    if (parent == null) {
+      return findSameFloorRoute(target[0], target[1]);
+    }
+    if (currentFloor == 1) {
+      return findFloor1CampusRoute(target[0], target[1]);
+    }
+    return const <List<double>>[];
   }
 
   /// Stage 4: route from Floor 1 through a real collision opening and out onto
@@ -584,13 +630,13 @@ class WorldNavigator {
       width: scene.width,
       height: scene.height,
     );
-    return pathfinder.findPath(
-      [markerX, markerY],
-      [targetX, targetY],
-    );
+    return pathfinder.findPath([markerX, markerY], [targetX, targetY]);
   }
 
-  RuntimeIndex<StairSection> _buildStairIndex(List<StairSection> stairs, MapItem building) {
+  RuntimeIndex<StairSection> _buildStairIndex(
+    List<StairSection> stairs,
+    MapItem building,
+  ) {
     final boxes = stairs.map((s) {
       final area = _buildArea(s.stair, s.source, building);
       return area.box;
@@ -598,7 +644,10 @@ class WorldNavigator {
     return RuntimeIndex(stairs, boxes);
   }
 
-  RuntimeIndex<StairSection> _buildSectionIndex(List<StairSection> zones, MapItem building) {
+  RuntimeIndex<StairSection> _buildSectionIndex(
+    List<StairSection> zones,
+    MapItem building,
+  ) {
     final boxes = zones.map((z) {
       final area = _buildArea(z.stair, z.source, building);
       return area.box;
@@ -620,7 +669,7 @@ class WorldNavigator {
       (0.0, 0.0),
       (item.width, 0.0),
       (item.width, item.height),
-      (0.0, item.height)
+      (0.0, item.height),
     ]) {
       final w = item.localToWorld(lx, ly);
       final projected = transform.project(w[0], w[1]);
@@ -655,12 +704,18 @@ class WorldNavigator {
       final dy = current[1] - prev[1];
       final length2 = dx * dx + dy * dy;
       final t = length2 > 0
-          ? math.max(0.0, math.min(1.0,
-              ((px - prev[0]) * dx + (py - prev[1]) * dy) / length2))
+          ? math.max(
+              0.0,
+              math.min(
+                1.0,
+                ((px - prev[0]) * dx + (py - prev[1]) * dy) / length2,
+              ),
+            )
           : 0.0;
       best = math.min(
-          best,
-          hypot(px - prev[0] - t * dx, py - prev[1] - t * dy));
+        best,
+        hypot(px - prev[0] - t * dx, py - prev[1] - t * dy),
+      );
       prev = current;
     }
     return best;
@@ -748,7 +803,10 @@ class WorldNavigator {
 
     for (var i = 0; i < count; i++) {
       var nx = math.max(radius, math.min(scene.width - radius, x + dx / count));
-      var ny = math.max(radius, math.min(scene.height - radius, y + dy / count));
+      var ny = math.max(
+        radius,
+        math.min(scene.height - radius, y + dy / count),
+      );
 
       if (_allowed(nx, ny)) {
         x = nx;
@@ -771,7 +829,10 @@ class WorldNavigator {
     var x = px;
     var y = py;
     var remaining = dt;
-    final distanceStep = math.max(0.01, math.min(physicsStep, collisionRadius / 2));
+    final distanceStep = math.max(
+      0.01,
+      math.min(physicsStep, collisionRadius / 2),
+    );
 
     while (remaining > 1e-9) {
       final speed = walkingSpeed(x, y);
@@ -822,7 +883,8 @@ class WorldNavigator {
       if (px < box.$1 - radius ||
           px > box.$3 + radius ||
           py < box.$2 - radius ||
-          py > box.$4 + radius) continue;
+          py > box.$4 + radius)
+        continue;
       final index = _collisionIndices[key];
       if (index != null) {
         final nearby = index.query(px, py, padding: radius);
@@ -861,7 +923,8 @@ class WorldNavigator {
 
     lockedSections.removeWhere((key) {
       final section = _sectionsById[key];
-      return section == null || !section.contains(local[0], local[1], tolerance: 8);
+      return section == null ||
+          !section.contains(local[0], local[1], tolerance: 8);
     });
 
     if (transition != null) {
@@ -887,7 +950,12 @@ class WorldNavigator {
       final zone = _detectStairEntry(local);
       if (zone != null) {
         final prog = sectionProgress(zone, local[0], local[1]);
-        transition = FloorTransition(zone, currentFloor, zone.target, prog.$1[0]);
+        transition = FloorTransition(
+          zone,
+          currentFloor,
+          zone.target,
+          prog.$1[0],
+        );
         phase = TransitionPhase.enteringStairs;
       }
     }
@@ -936,8 +1004,11 @@ class WorldNavigator {
         return zone;
       }
       if (prevRaw != null &&
-          !(-transitionThreshold <= prevRaw && prevRaw <= 1 + transitionThreshold) &&
-          0 <= raw && raw <= 1 && lateral) {
+          !(-transitionThreshold <= prevRaw &&
+              prevRaw <= 1 + transitionThreshold) &&
+          0 <= raw &&
+          raw <= 1 &&
+          lateral) {
         return zone;
       }
     }
@@ -968,7 +1039,11 @@ class WorldNavigator {
 
   void _waitForStairExit(FloorTransition completed) {
     lastCompletedStair = completed.section;
-    final sourceArea = _buildArea(completed.section.stair, completed.source, parent);
+    final sourceArea = _buildArea(
+      completed.section.stair,
+      completed.source,
+      parent,
+    );
     exitAreas = [sourceArea];
     waitFloor = currentFloor;
     phase = TransitionPhase.arrived;

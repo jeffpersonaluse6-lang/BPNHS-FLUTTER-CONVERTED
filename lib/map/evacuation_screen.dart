@@ -40,6 +40,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   bool _stairTurnaroundActive = false;
   bool _routeAcrossBuildingExit = false;
   List<double>? _campusRouteDestination;
+  String? _evacuationGateKind;
   double _routeRefreshElapsed = 0;
 
   static const double joystickBaseSize = 148;
@@ -49,10 +50,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   @override
   void initState() {
     super.initState();
-    navigator = WorldNavigator(
-      widget.scene,
-      collisionRadius: collisionRadius,
-    );
+    navigator = WorldNavigator(widget.scene, collisionRadius: collisionRadius);
     camera = SmoothCamera();
     camera.center([navigator.markerX, navigator.markerY]);
     _startTicker();
@@ -72,20 +70,31 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     if (moveMode && (joystickX != 0 || joystickY != 0)) {
       final before = [navigator.markerX, navigator.markerY];
       final result = navigator.walk(
-        navigator.markerX, navigator.markerY, joystickX, joystickY, dt,
+        navigator.markerX,
+        navigator.markerY,
+        joystickX,
+        joystickY,
+        dt,
       );
       navigator.markerX = result[0];
       navigator.markerY = result[1];
       final moved = result[0] != before[0] || result[1] != before[1];
-      camera.follow([navigator.markerX, navigator.markerY], dt,
-          moving: moved, diameter: playerSize);
+      camera.follow(
+        [navigator.markerX, navigator.markerY],
+        dt,
+        moving: moved,
+        diameter: playerSize,
+      );
       navigator.update(navigator.markerX, navigator.markerY);
       _updateLiveRoute(dt);
       setState(() {});
     } else if (followActive) {
       final changed = camera.follow(
-          [navigator.markerX, navigator.markerY], dt,
-          moving: false, diameter: playerSize);
+        [navigator.markerX, navigator.markerY],
+        dt,
+        moving: false,
+        diameter: playerSize,
+      );
       if (changed) setState(() {});
       final screen = camera.screen([navigator.markerX, navigator.markerY]);
       if (hypot(screen[0] - camera.width / 2, screen[1] - camera.height / 2) <
@@ -107,8 +116,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         'Walking on campus. Walk through a building doorway to enter.';
     String subtitle = 'Campus overview';
     if (navigator.parent != null) {
-      subtitle =
-          '${navigator.parent!.text} - Floor ${navigator.currentFloor}';
+      subtitle = '${navigator.parent!.text} - Floor ${navigator.currentFloor}';
       status = subtitle;
       if (navigator.transition != null) {
         final t = navigator.transition!;
@@ -168,11 +176,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                   ),
                 ),
                 if (moveMode)
-                  Positioned(
-                    right: 30,
-                    bottom: 30,
-                    child: _buildJoystick(),
-                  ),
+                  Positioned(right: 30, bottom: 30, child: _buildJoystick()),
               ],
             ),
           ),
@@ -196,18 +200,21 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                 const Text(
                   'BPNHS Evacuation Navigator',
                   style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold),
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 Text(
                   routeSelectionMode
                       ? 'ROUTE TEST - tap a destination on the current floor.'
                       : moveMode
-                          ? 'MOVE USER MODE - use the joystick.'
-                          : 'MAP MODE - drag to pan; pinch to zoom.',
+                      ? 'MOVE USER MODE - use the joystick.'
+                      : 'MAP MODE - drag to pan; pinch to zoom.',
                   style: const TextStyle(
-                      color: Color(0xFFDCE8F7), fontSize: 13),
+                    color: Color(0xFFDCE8F7),
+                    fontSize: 13,
+                  ),
                 ),
               ],
             ),
@@ -237,14 +244,21 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(subtitle,
-                    style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF183B56))),
-                Text(status,
-                    style: const TextStyle(
-                        color: Color(0xFF31475E), fontSize: 14)),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF183B56),
+                  ),
+                ),
+                Text(
+                  status,
+                  style: const TextStyle(
+                    color: Color(0xFF31475E),
+                    fontSize: 14,
+                  ),
+                ),
               ],
             ),
           ),
@@ -273,7 +287,9 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             ElevatedButton.icon(
               onPressed: _startRouteToFloorOne,
               icon: const Icon(Icons.stairs),
-              label: Text(routeTargetFloor == 1 ? 'Routing to F1' : 'To Floor 1'),
+              label: Text(
+                routeTargetFloor == 1 ? 'Routing to F1' : 'To Floor 1',
+              ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: routeTargetFloor == 1
                     ? const Color(0xFFD9E8FF)
@@ -283,6 +299,30 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             ),
             const SizedBox(width: 8),
           ],
+          ElevatedButton.icon(
+            onPressed: () => _startEvacuationRoute('main_gate'),
+            icon: const Icon(Icons.exit_to_app),
+            label: const Text('Main route'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _evacuationGateKind == 'main_gate'
+                  ? const Color(0xFFD9E8FF)
+                  : Colors.white,
+              foregroundColor: const Color(0xFF12345A),
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            onPressed: () => _startEvacuationRoute('secondary_gate'),
+            icon: const Icon(Icons.alt_route),
+            label: const Text('Alternative'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _evacuationGateKind == 'secondary_gate'
+                  ? const Color(0xFFFFE8CC)
+                  : Colors.white,
+              foregroundColor: const Color(0xFF8A4B08),
+            ),
+          ),
+          const SizedBox(width: 8),
           ElevatedButton.icon(
             onPressed: () {
               setState(() {
@@ -333,8 +373,9 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             icon: Icon(moveMode ? Icons.check : Icons.open_with),
             label: Text(moveMode ? 'Finish moving' : 'Move user'),
             style: ElevatedButton.styleFrom(
-              backgroundColor:
-                  moveMode ? const Color(0xFFD9E8FF) : Colors.white,
+              backgroundColor: moveMode
+                  ? const Color(0xFFD9E8FF)
+                  : Colors.white,
               foregroundColor: const Color(0xFF12345A),
             ),
           ),
@@ -365,17 +406,19 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: Colors.white.withValues(alpha: 0.91),
-                border: Border.all(
-                    color: const Color(0xFF155EEF), width: 3),
+                border: Border.all(color: const Color(0xFF155EEF), width: 3),
               ),
               child: Stack(
                 alignment: Alignment.center,
                 children: [
-                  const Text('MOVE',
-                      style: TextStyle(
-                          color: Color(0xFF12345A),
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold)),
+                  const Text(
+                    'MOVE',
+                    style: TextStyle(
+                      color: Color(0xFF12345A),
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                   Positioned(
                     left: joystickKnobPosition.dx,
                     top: joystickKnobPosition.dy,
@@ -386,8 +429,11 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                         shape: BoxShape.circle,
                         color: Color(0xFF155EEF),
                       ),
-                      child: const Icon(Icons.open_with,
-                          color: Colors.white, size: 26),
+                      child: const Icon(
+                        Icons.open_with,
+                        color: Colors.white,
+                        size: 26,
+                      ),
                     ),
                   ),
                 ],
@@ -395,10 +441,14 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             ),
           ),
           const SizedBox(height: 4),
-          const Text('Joystick',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-          const Text('Hold and drag',
-              style: TextStyle(fontSize: 11, color: Color(0xFF476582))),
+          const Text(
+            'Joystick',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+          ),
+          const Text(
+            'Hold and drag',
+            style: TextStyle(fontSize: 11, color: Color(0xFF476582)),
+          ),
         ],
       ),
     );
@@ -452,6 +502,74 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     joystickKnobPosition = Offset(center, center);
   }
 
+  String _gateLabel(String kind) =>
+      kind == 'secondary_gate' ? 'Secondary Gate' : 'Main Gate';
+
+  void _startEvacuationRoute(String gateKind) {
+    if (navigator.transition != null) {
+      setState(() {
+        routeStatus = 'Finish the stair transition first';
+        routeSelectionMode = false;
+      });
+      return;
+    }
+
+    final destination = navigator.campusGateApproach(gateKind);
+    if (destination == null) {
+      setState(() {
+        routeStatus =
+            '${_gateLabel(gateKind)} is not configured on the campus map';
+        _evacuationGateKind = null;
+      });
+      return;
+    }
+
+    final building = navigator.parent;
+
+    setState(() {
+      routeSelectionMode = false;
+      moveMode = false;
+      joystickX = 0;
+      joystickY = 0;
+      _evacuationGateKind = gateKind;
+      _routeAcrossBuildingExit = true;
+      _campusRouteDestination = destination;
+      _routeRefreshElapsed = 0;
+      _stairTurnaroundActive = false;
+      routeBuildingId = building?.id;
+      routeFloor = navigator.currentFloor;
+
+      if (building != null && navigator.currentFloor > 1) {
+        routeTargetFloor = 1;
+        _refreshMultiFloorLeg();
+        routeStatus =
+            '${gateKind == 'secondary_gate' ? 'Alternative' : 'Main'} evacuation route → ${_gateLabel(gateKind)} · first go to Floor 1';
+        return;
+      }
+
+      routeTargetFloor = null;
+      if (building != null) {
+        _beginCampusExitLeg();
+        return;
+      }
+
+      final route = navigator.findCampusGateRoute(gateKind);
+      routePoints = route;
+      if (route.isEmpty) {
+        routeStatus = 'No route to ${_gateLabel(gateKind)}';
+        _routeAcrossBuildingExit = false;
+        _campusRouteDestination = null;
+        _evacuationGateKind = null;
+        routeBuildingId = null;
+        routeFloor = null;
+      } else {
+        routeStatus =
+            '${gateKind == 'secondary_gate' ? 'Alternative' : 'Main'} evacuation route → ${_gateLabel(gateKind)}';
+        routeFloor = 1;
+      }
+    });
+  }
+
   void _startRouteToFloorOne() {
     final building = navigator.parent;
     if (building == null || navigator.currentFloor <= 1) return;
@@ -493,7 +611,9 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       routeBuildingId = null;
       routeFloor = null;
     } else {
-      routeStatus = 'Exit building → campus';
+      routeStatus = _evacuationGateKind == null
+          ? 'Exit building → campus'
+          : 'Exit building → ${_gateLabel(_evacuationGateKind!)}';
     }
   }
 
@@ -514,8 +634,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     if (navigator.transition != null) {
       routePoints = const [];
       routeFloor = navigator.currentFloor;
-      routeStatus =
-          'On stairs to Floor ${navigator.transition!.target}';
+      routeStatus = 'On stairs to Floor ${navigator.transition!.target}';
       return;
     }
 
@@ -539,16 +658,14 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     routePoints = leg.path;
     routeFloor = navigator.currentFloor;
     _routeRefreshElapsed = 0;
-    routeStatus =
-        'Go to stairs: Floor ${leg.sourceFloor} → ${leg.targetFloor}';
+    routeStatus = 'Go to stairs: Floor ${leg.sourceFloor} → ${leg.targetFloor}';
   }
 
   void _updateLiveRoute(double dt) {
     final currentBuildingId = navigator.parent?.id;
 
     if (routeTargetFloor != null) {
-      if (currentBuildingId == null ||
-          currentBuildingId != routeBuildingId) {
+      if (currentBuildingId == null || currentBuildingId != routeBuildingId) {
         routePoints = const [];
         routeTargetFloor = null;
         routeBuildingId = null;
@@ -560,8 +677,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       if (navigator.transition != null) {
         routePoints = navigator.activeStairRouteGuide();
         routeFloor = navigator.currentFloor;
-        routeStatus =
-            'On stairs to Floor ${navigator.transition!.target}';
+        routeStatus = 'On stairs to Floor ${navigator.transition!.target}';
         return;
       }
 
@@ -632,13 +748,13 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           List<double>.from(routePoints[i]),
       ];
 
-      if (distanceToStair <=
-          (collisionRadius * 1.6).clamp(12.0, 32.0)) {
+      if (distanceToStair <= (collisionRadius * 1.6).clamp(12.0, 32.0)) {
         routeStatus = 'Enter the stairs';
       }
 
       _routeRefreshElapsed += dt;
-      final nearNextWaypoint = routePoints.length > 2 &&
+      final nearNextWaypoint =
+          routePoints.length > 2 &&
           hypot(
                 routePoints[1][0] - current[0],
                 routePoints[1][1] - current[1],
@@ -648,8 +764,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       if (_routeRefreshElapsed < 0.25 && !nearNextWaypoint) return;
       _routeRefreshElapsed = 0;
 
-      final refreshedLeg =
-          navigator.findRouteTowardFloor(routeTargetFloor!);
+      final refreshedLeg = navigator.findRouteTowardFloor(routeTargetFloor!);
       if (refreshedLeg != null) {
         routePoints = refreshedLeg.path;
         routeFloor = navigator.currentFloor;
@@ -669,15 +784,16 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         destination[1] - current[1],
       );
 
-      if (distanceToDestination <=
-          (collisionRadius * 1.5).clamp(10.0, 30.0)) {
+      if (distanceToDestination <= (collisionRadius * 1.5).clamp(10.0, 30.0)) {
         routePoints = const [];
         _routeAcrossBuildingExit = false;
         _campusRouteDestination = null;
         _routeRefreshElapsed = 0;
         routeBuildingId = null;
         routeFloor = null;
-        routeStatus = 'Campus destination reached';
+        routeStatus = _evacuationGateKind == null
+            ? 'Campus destination reached'
+            : '${_gateLabel(_evacuationGateKind!)} reached';
         return;
       }
 
@@ -691,18 +807,44 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           );
           if (campusRoute.isNotEmpty) {
             routePoints = campusRoute;
-            routeStatus = 'Campus route';
+            routeStatus = _evacuationGateKind == null
+                ? 'Campus route'
+                : '${_evacuationGateKind == 'secondary_gate' ? 'Alternative' : 'Main'} evacuation route → ${_gateLabel(_evacuationGateKind!)}';
           }
         }
-      } else if (currentBuildingId != routeBuildingId ||
-          navigator.currentFloor != 1) {
+      } else if (navigator.currentFloor != 1) {
+        // Do not cancel an evacuation route if the user enters another
+        // building and goes upstairs. Recover by routing back to Floor 1,
+        // then continue toward the same campus gate.
+        routeBuildingId = currentBuildingId;
+        routeFloor = navigator.currentFloor;
+        routeTargetFloor = 1;
+        _stairTurnaroundActive = false;
         routePoints = const [];
-        _routeAcrossBuildingExit = false;
-        _campusRouteDestination = null;
-        routeBuildingId = null;
-        routeFloor = null;
-        routeStatus = 'Campus route cancelled';
+        _refreshMultiFloorLeg();
+        routeStatus =
+            'Entered ${navigator.parent?.text ?? 'building'} · return to Floor 1, then continue evacuation';
         return;
+      } else if (routeBuildingId != currentBuildingId) {
+        // The player entered a different Floor-1 building (for example the
+        // court) while following the campus route. Keep the evacuation target
+        // and immediately reroute through a valid exit instead of cancelling.
+        routeBuildingId = currentBuildingId;
+        routeFloor = 1;
+        final recoveryRoute = navigator.findFloor1CampusRoute(
+          destination[0],
+          destination[1],
+        );
+        if (recoveryRoute.isNotEmpty) {
+          routePoints = recoveryRoute;
+          routeStatus = _evacuationGateKind == null
+              ? 'Exit building → campus'
+              : 'Continue evacuation → ${_gateLabel(_evacuationGateKind!)}';
+        } else {
+          routePoints = const [];
+          routeStatus =
+              'Find a building exit to continue toward ${_evacuationGateKind == null ? 'the campus route' : _gateLabel(_evacuationGateKind!)}';
+        }
       }
 
       if (routePoints.length >= 2) {
@@ -714,7 +856,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       }
 
       _routeRefreshElapsed += dt;
-      final nearNextWaypoint = routePoints.length > 2 &&
+      final nearNextWaypoint =
+          routePoints.length > 2 &&
           hypot(
                 routePoints[1][0] - current[0],
                 routePoints[1][1] - current[1],
@@ -724,14 +867,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       if (_routeRefreshElapsed >= 0.25 || nearNextWaypoint) {
         _routeRefreshElapsed = 0;
         final refreshed = currentBuildingId == null
-            ? navigator.findSameFloorRoute(
-                destination[0],
-                destination[1],
-              )
-            : navigator.findFloor1CampusRoute(
-                destination[0],
-                destination[1],
-              );
+            ? navigator.findSameFloorRoute(destination[0], destination[1])
+            : navigator.findFloor1CampusRoute(destination[0], destination[1]);
         if (refreshed.isNotEmpty) {
           routePoints = refreshed;
         }
@@ -758,8 +895,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     final dy = destination[1] - current[1];
     final distanceToDestination = hypot(dx, dy);
 
-    if (distanceToDestination <=
-        (collisionRadius * 1.5).clamp(10.0, 30.0)) {
+    if (distanceToDestination <= (collisionRadius * 1.5).clamp(10.0, 30.0)) {
       routePoints = const [];
       _routeRefreshElapsed = 0;
       routeBuildingId = null;
@@ -775,18 +911,18 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     ];
 
     _routeRefreshElapsed += dt;
-    final nearNextWaypoint = routePoints.length > 2 &&
-        hypot(
-              routePoints[1][0] - current[0],
-              routePoints[1][1] - current[1],
-            ) <=
+    final nearNextWaypoint =
+        routePoints.length > 2 &&
+        hypot(routePoints[1][0] - current[0], routePoints[1][1] - current[1]) <=
             (collisionRadius * 2.5).clamp(18.0, 50.0);
 
     if (_routeRefreshElapsed < 0.25 && !nearNextWaypoint) return;
     _routeRefreshElapsed = 0;
 
-    final refreshed =
-        navigator.findSameFloorRoute(destination[0], destination[1]);
+    final refreshed = navigator.findSameFloorRoute(
+      destination[0],
+      destination[1],
+    );
     if (refreshed.isNotEmpty) {
       routePoints = refreshed;
       routeStatus = 'Route ready';
@@ -800,6 +936,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     _stairTurnaroundActive = false;
     _routeAcrossBuildingExit = false;
     _campusRouteDestination = null;
+    _evacuationGateKind = null;
     routeStatus = null;
     routeBuildingId = null;
     routeFloor = null;
@@ -825,8 +962,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     final targetY = world[1];
 
     final building = navigator.parent;
-    if (building != null &&
-        !navigator.inside(building, targetX, targetY)) {
+    if (building != null && !navigator.inside(building, targetX, targetY)) {
       setState(() {
         routeSelectionMode = false;
         _routeAcrossBuildingExit = true;
@@ -853,6 +989,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       _stairTurnaroundActive = false;
       _routeAcrossBuildingExit = false;
       _campusRouteDestination = null;
+      _evacuationGateKind = null;
       routePoints = route;
       routeSelectionMode = false;
       _routeRefreshElapsed = 0;
@@ -873,8 +1010,10 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
   void _onScaleStart(ScaleStartDetails details) {
     if (moveMode) return;
-    _gestureAnchor =
-        camera.world([details.focalPoint.dx, details.focalPoint.dy]);
+    _gestureAnchor = camera.world([
+      details.focalPoint.dx,
+      details.focalPoint.dy,
+    ]);
     _gestureScale = camera.scale;
   }
 
@@ -887,5 +1026,4 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     camera.y += focal[1] - current[1];
     setState(() {});
   }
-
 }
