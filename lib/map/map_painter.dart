@@ -5,6 +5,7 @@ import '../models/map_scene.dart';
 import '../models/math_helper.dart';
 import '../navigation/collision.dart';
 import '../navigation/floor_transform.dart';
+import '../navigation/hazard.dart';
 import '../navigation/world_navigator.dart';
 
 const double _defaultFloorWidth = 1436;
@@ -170,27 +171,48 @@ class MapPainter extends CustomPainter {
     for (final hazard in navigator.visibleHazards) {
       final center = Offset(hazard.x, hazard.y);
 
+      final safetyFill = Paint()
+        ..color = const Color(0x12F59E0B)
+        ..style = PaintingStyle.fill;
+      canvas.drawCircle(
+        center,
+        hazard.radius + hazardSafetyClearance,
+        safetyFill,
+      );
+
+      final safetyBorder = Paint()
+        ..color = const Color(0x88F59E0B)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2 / safeScale;
+      canvas.drawCircle(
+        center,
+        hazard.radius + hazardSafetyClearance,
+        safetyBorder,
+      );
+
+      final isFire = hazard.kind == HazardKind.fire;
+
       final fill = Paint()
-        ..color = const Color(0x44DC2626)
+        ..color = isFire ? const Color(0x44DC2626) : const Color(0x337C3AED)
         ..style = PaintingStyle.fill;
       canvas.drawCircle(center, hazard.radius, fill);
 
       final border = Paint()
-        ..color = const Color(0xFFE11D48)
+        ..color = isFire ? const Color(0xFFE11D48) : const Color(0xFFA855F7)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3 / safeScale;
       canvas.drawCircle(center, hazard.radius, border);
 
       final core = Paint()
-        ..color = const Color(0xFFF97316)
+        ..color = isFire ? const Color(0xFFF97316) : const Color(0xFF581C87)
         ..style = PaintingStyle.fill;
       canvas.drawCircle(center, 11 / safeScale, core);
 
       final textPainter = TextPainter(
         text: TextSpan(
-          text: 'FIRE',
+          text: isFire ? 'FIRE' : 'SHOOTER',
           style: TextStyle(
-            color: const Color(0xFF991B1B),
+            color: isFire ? const Color(0xFF991B1B) : const Color(0xFF581C87),
             fontSize: 11 / safeScale,
             fontWeight: FontWeight.w800,
           ),

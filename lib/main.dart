@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'models/map_scene.dart';
-import 'map/evacuation_screen.dart';
+import 'welcome/welcome_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setPreferredOrientations([DeviceOrientation.landscapeLeft]);
+  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const BpnhsApp());
 }
 
@@ -77,10 +77,7 @@ class _MapLoaderScreenState extends State<MapLoaderScreen> {
               const SizedBox(height: 16),
               Text(_error!, style: const TextStyle(fontSize: 18)),
               const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: _loadMap,
-                child: const Text('Retry'),
-              ),
+              ElevatedButton(onPressed: _loadMap, child: const Text('Retry')),
             ],
           ),
         ),
@@ -102,6 +99,6 @@ class _MapLoaderScreenState extends State<MapLoaderScreen> {
       );
     }
 
-    return EvacuationScreen(scene: _scene!);
+    return WelcomeScreen(scene: _scene!);
   }
 }

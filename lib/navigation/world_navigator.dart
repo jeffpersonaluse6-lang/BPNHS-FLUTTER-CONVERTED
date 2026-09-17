@@ -4,6 +4,7 @@ import '../models/map_scene.dart';
 import '../models/math_helper.dart';
 import 'collision.dart';
 import 'stairs.dart';
+import 'stair_waypoint_guides.dart';
 import 'floor_transform.dart';
 import 'runtime_index.dart';
 import 'same_floor_pathfinder.dart';
@@ -128,6 +129,38 @@ class WorldNavigator {
     return zone;
   }
 
+  /// Adds a manually reported unsafe/restricted area for
+  /// active-shooter simulation. This does not track a person.
+  HazardZone addActiveShooterHazard(double x, double y, {double radius = 70}) {
+    final zone = HazardZone(
+      id: 'active_shooter_${_nextHazardId++}',
+      kind: HazardKind.activeShooter,
+      x: x,
+      y: y,
+      radius: radius,
+      buildingId: parent?.id,
+      floor: parent == null ? 1 : currentFloor,
+    );
+    hazards.add(zone);
+    return zone;
+  }
+
+  HazardZone? hazardById(String id) {
+    for (final hazard in hazards) {
+      if (hazard.id == id) return hazard;
+    }
+    return null;
+  }
+
+  bool moveHazard(String id, double x, double y) {
+    final hazard = hazardById(id);
+    if (hazard == null) return false;
+
+    hazard.x = x.clamp(0.0, scene.width).toDouble();
+    hazard.y = y.clamp(0.0, scene.height).toDouble();
+    return true;
+  }
+
   void clearHazards() {
     hazards.clear();
   }
@@ -149,11 +182,15 @@ class WorldNavigator {
         .toList(growable: false);
   }
 
-  List<Barrier> _hazardBarriersForSurface(String? buildingId, int floor) {
+  List<Barrier> _hazardBarriersForSurface(
+    String? buildingId,
+    int floor, {
+    double safetyMargin = hazardSafetyClearance,
+  }) {
     return <Barrier>[
       for (final hazard in hazards)
         if (hazard.matchesSurface(buildingId, floor))
-          ...hazard.routingBarriers(),
+          ...hazard.routingBarriers(safetyMargin: safetyMargin),
     ];
   }
 
@@ -182,13 +219,72 @@ class WorldNavigator {
     return true;
   }
 
+  bool _isCourtBuilding(MapItem building) {
+    final identity = '${building.id} ${building.opens ?? ''} ${building.kind}'
+        .toLowerCase();
+
+    if (identity.contains('court')) return true;
+
+    // Court buildings are reliably identifiable from their floor content.
+    for (final item in scene.floorItems(building.id, 1)) {
+      if (item.kind == 'court_roof' || item.kind == 'court') {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  List<Barrier> _campusBuildingFootprintBarriers() {
+    final barriers = <Barrier>[];
+    final currentBuildingId = parent?.id;
+
+    for (final building in scene.buildings()) {
+      // The route may begin inside the building the user currently occupies,
+      // so do not seal that building until the route exits it.
+      if (building.id == currentBuildingId) continue;
+
+      // Courts are intentionally traversable evacuation space.
+      if (_isCourtBuilding(building)) continue;
+
+      final points = <List<double>>[
+        building.localToWorld(0, 0),
+        building.localToWorld(building.width, 0),
+        building.localToWorld(building.width, building.height),
+        building.localToWorld(0, building.height),
+      ];
+
+      for (var i = 0; i < points.length; i++) {
+        final a = points[i];
+        final b = points[(i + 1) % points.length];
+        barriers.add(
+          Barrier(
+            startX: a[0],
+            startY: a[1],
+            endX: b[0],
+            endY: b[1],
+            radius: 1.0,
+          ),
+        );
+      }
+    }
+
+    return barriers;
+  }
+
+  List<Barrier> _campusRoutingBaseBarriers() {
+    return <Barrier>[...groundBarriers, ..._campusBuildingFootprintBarriers()];
+  }
+
   List<Barrier> _groundRoutingBarriers() {
     return <Barrier>[
-      ...groundBarriers,
-      // Floor-1 routes can pass from a building into campus, so include every
-      // Floor-1 fire zone. Spatial position still determines whether it matters.
+      ..._campusRoutingBaseBarriers(),
+      // Floor-1 routes can pass from the current building into campus, so
+      // include every Floor-1 hazard. Building footprints are routing-only;
+      // manual movement/collision behavior is unchanged.
       for (final hazard in hazards)
-        if (hazard.floor == 1) ...hazard.routingBarriers(),
+        if (hazard.floor == 1)
+          ...hazard.routingBarriers(safetyMargin: hazardSafetyClearance),
     ];
   }
 
@@ -366,93 +462,93 @@ class WorldNavigator {
   ///
   /// Stairs/multi-floor routing are deliberately deferred to the next stage.
   /// During an active stair transition this returns no route.
-  List<Barrier> _floorOneHazardBarriers() {
+  List<Barrier> _floorOneHazardBarriers({
+    double safetyMargin = hazardSafetyClearance,
+  }) {
     return <Barrier>[
       for (final hazard in hazards)
-        if (hazard.floor == 1) ...hazard.routingBarriers(),
+        if (hazard.floor == 1)
+          ...hazard.routingBarriers(safetyMargin: hazardSafetyClearance),
     ];
+  }
+
+  bool _routePassesHazardGuard(
+    List<List<double>> path,
+    List<HazardZone> routeHazards,
+    double safetyMargin,
+  ) {
+    if (path.length < 2) return false;
+    if (routeHazards.isEmpty) return true;
+
+    final hazardOnly = SameFloorPathfinder(
+      barriers: <Barrier>[
+        for (final hazard in routeHazards)
+          ...hazard.routingBarriers(safetyMargin: safetyMargin),
+      ],
+      playerRadius: collisionRadius,
+      width: scene.width,
+      height: scene.height,
+    );
+
+    for (var i = 1; i < path.length; i++) {
+      if (!hazardOnly.lineIsWalkable(path[i - 1], path[i])) {
+        return false;
+      }
+    }
+    return true;
   }
 
   List<List<double>> _findCampusRoadRouteWithHazards(
     List<double> start,
     List<double> goal,
   ) {
-    // First calculate the clean road route exactly as before fire simulation.
-    // This preserves centerlines, T-junctions, and short road access legs.
-    final baselinePathfinder = SameFloorPathfinder(
-      barriers: groundBarriers,
+    final campusBaseBarriers = _campusRoutingBaseBarriers();
+    final floorHazards = hazards
+        .where((hazard) => hazard.floor == 1)
+        .toList(growable: false);
+
+    if (floorHazards.isEmpty) {
+      return SameFloorPathfinder(
+        barriers: campusBaseBarriers,
+        playerRadius: collisionRadius,
+        width: scene.width,
+        height: scene.height,
+        preferredAreas: campusPreferredAreas,
+      ).findPath(start, goal);
+    }
+
+    final hardBarriers = <Barrier>[
+      ...campusBaseBarriers,
+      ..._floorOneHazardBarriers(safetyMargin: hazardSafetyClearance),
+    ];
+
+    final riskZones = <RouteRiskZone>[
+      for (final hazard in floorHazards)
+        RouteRiskZone(
+          x: hazard.x,
+          y: hazard.y,
+          radius: hazard.radius + hazardSafetyClearance,
+        ),
+    ];
+
+    final route = SameFloorPathfinder(
+      barriers: hardBarriers,
       playerRadius: collisionRadius,
       width: scene.width,
       height: scene.height,
       preferredAreas: campusPreferredAreas,
-    );
-    final baseline = baselinePathfinder.findPath(start, goal);
-    if (baseline.isEmpty) return const <List<double>>[];
+      riskZones: riskZones,
+      riskWeight: 14.0,
+      riskInfluenceDistance: 320.0,
+    ).findPath(start, goal);
 
-    final fireBarriers = _floorOneHazardBarriers();
-    if (fireBarriers.isEmpty) return baseline;
+    if (route.length < 2) return const <List<double>>[];
 
-    final hazardAwareBarriers = <Barrier>[...groundBarriers, ...fireBarriers];
-
-    // This pathfinder is intentionally NOT road-preferred. It is used only for
-    // a single blocked baseline segment, so its job is a small local detour
-    // around the fire before immediately rejoining the road.
-    final localDetourPathfinder = SameFloorPathfinder(
-      barriers: hazardAwareBarriers,
-      playerRadius: collisionRadius,
-      width: scene.width,
-      height: scene.height,
-    );
-
-    final result = <List<double>>[List<double>.from(baseline.first)];
-
-    for (var i = 1; i < baseline.length; i++) {
-      final a = result.last;
-      final b = baseline[i];
-
-      if (localDetourPathfinder.lineIsWalkable(a, b)) {
-        result.add(List<double>.from(b));
-        continue;
-      }
-
-      final detour = localDetourPathfinder.findPath(a, b);
-      if (detour.isEmpty) {
-        // Unusual geometry: use the fully hazard-aware pathfinder as a safe
-        // fallback rather than drawing through the fire.
-        final fallback = SameFloorPathfinder(
-          barriers: hazardAwareBarriers,
-          playerRadius: collisionRadius,
-          width: scene.width,
-          height: scene.height,
-          preferredAreas: campusPreferredAreas,
-        ).findPath(start, goal);
-        return fallback;
-      }
-
-      for (var j = 1; j < detour.length; j++) {
-        final point = detour[j];
-        final prev = result.last;
-        if (hypot(point[0] - prev[0], point[1] - prev[1]) > 1e-6) {
-          result.add(List<double>.from(point));
-        }
-      }
+    if (!_routePassesHazardGuard(route, floorHazards, hazardSafetyClearance)) {
+      return const <List<double>>[];
     }
 
-    // Final safety check: every displayed blue segment must respect fire and
-    // real collision geometry.
-    for (var i = 1; i < result.length; i++) {
-      if (!localDetourPathfinder.lineIsWalkable(result[i - 1], result[i])) {
-        return SameFloorPathfinder(
-          barriers: hazardAwareBarriers,
-          playerRadius: collisionRadius,
-          width: scene.width,
-          height: scene.height,
-          preferredAreas: campusPreferredAreas,
-        ).findPath(start, goal);
-      }
-    }
-
-    return result;
+    return route;
   }
 
   List<List<double>> findSameFloorRoute(double targetX, double targetY) {
@@ -494,6 +590,160 @@ class WorldNavigator {
   ///
   /// The route is intentionally computed one floor at a time. After the player
   /// completes the physical stair transition, call this again on the new floor.
+  StairWaypointGuide? _routeWaypointGuideForSection(
+    MapItem building,
+    StairSection section,
+    int fromFloor,
+    int toFloor,
+  ) {
+    final sections =
+        (_connections['${building.id}:$fromFloor'] ?? const <StairSection>[])
+            .where((candidate) => candidate.target == toFloor)
+            .toList();
+
+    if (sections.isEmpty) return null;
+
+    StairWaypointGuide? bestGuide;
+    var bestDistance = double.infinity;
+
+    for (final guide in stairWaypointGuides) {
+      if (guide.buildingId != building.id ||
+          !guide.connects(fromFloor, toFloor)) {
+        continue;
+      }
+
+      final guidePoints = _routeWaypointWorldPoints(
+        building,
+        guide,
+        fromFloor,
+        toFloor,
+      );
+      if (guidePoints.isEmpty) continue;
+
+      final guideStart = guidePoints.first;
+
+      // Bind each authored guide to the PHYSICAL staircase whose source-side
+      // stair entry is nearest to the guide's first point. This allows two or
+      // more waypoint guides between the same floor pair without all stair
+      // candidates incorrectly reusing the first guide.
+      StairSection? nearestSection;
+      var nearestDistance = double.infinity;
+
+      for (final candidate in sections) {
+        final laneRoutes = _stairLaneRoutes(building, candidate);
+        if (laneRoutes.isEmpty || laneRoutes.first.isEmpty) continue;
+
+        final stairEntry = laneRoutes.first.first;
+        final distance = hypot(
+          guideStart[0] - stairEntry[0],
+          guideStart[1] - stairEntry[1],
+        );
+
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearestSection = candidate;
+        }
+      }
+
+      if (nearestSection?.id != section.id) continue;
+
+      if (nearestDistance < bestDistance) {
+        bestDistance = nearestDistance;
+        bestGuide = guide;
+      }
+    }
+
+    return bestGuide;
+  }
+
+  List<List<double>> _routeWaypointWorldPoints(
+    MapItem building,
+    StairWaypointGuide guide,
+    int fromFloor,
+    int toFloor,
+  ) {
+    final transform =
+        _transforms[building.id] ?? FloorTransform.build(building);
+    return [
+      for (final p in guide.orderedPoints(fromFloor, toFloor))
+        transform.project(p[0], p[1]),
+    ];
+  }
+
+  String? authoredWaypointGuideKeyForSection(StairSection section) {
+    final building = parent;
+    if (building == null) return null;
+
+    final guide = _routeWaypointGuideForSection(
+      building,
+      section,
+      currentFloor,
+      section.target,
+    );
+    if (guide == null) return null;
+
+    return '${guide.id}:${section.id}:$currentFloor:${section.target}';
+  }
+
+  List<List<double>> authoredWaypointGuideForSection(StairSection section) {
+    final building = parent;
+    if (building == null) return const <List<double>>[];
+
+    final guide = _routeWaypointGuideForSection(
+      building,
+      section,
+      currentFloor,
+      section.target,
+    );
+    if (guide == null) return const <List<double>>[];
+
+    return _routeWaypointWorldPoints(
+      building,
+      guide,
+      currentFloor,
+      section.target,
+    );
+  }
+
+  List<List<double>> _remainingAuthoredWaypointGuide(
+    MapItem building,
+    StairSection section,
+  ) {
+    final guide = _routeWaypointGuideForSection(
+      building,
+      section,
+      section.source,
+      section.target,
+    );
+    if (guide == null) return const <List<double>>[];
+
+    final points = _routeWaypointWorldPoints(
+      building,
+      guide,
+      section.source,
+      section.target,
+    );
+    if (points.length < 2) return const <List<double>>[];
+
+    var nearest = 0;
+    var best = double.infinity;
+    for (var i = 0; i < points.length; i++) {
+      final distance = hypot(markerX - points[i][0], markerY - points[i][1]);
+      if (distance < best) {
+        best = distance;
+        nearest = i;
+      }
+    }
+
+    final start = nearest < points.length - 1 ? nearest + 1 : nearest;
+
+    return <List<double>>[
+      <double>[markerX, markerY],
+      for (var i = start; i < points.length; i++)
+        <double>[points[i][0], points[i][1]],
+    ];
+  }
+
   StairRouteLeg? findRouteTowardFloor(int targetFloor) {
     final building = parent;
     if (building == null || transition != null) return null;
@@ -530,6 +780,55 @@ class WorldNavigator {
     double bestCost = double.infinity;
 
     for (final section in eligible) {
+      final authoredGuide = _routeWaypointGuideForSection(
+        building,
+        section,
+        currentFloor,
+        section.target,
+      );
+
+      if (authoredGuide != null) {
+        final guidePath = _routeWaypointWorldPoints(
+          building,
+          authoredGuide,
+          currentFloor,
+          section.target,
+        );
+
+        if (guidePath.length >= 2 &&
+            _pathClearOfSurfaceHazards(guidePath, building.id, currentFloor)) {
+          final approach = pathfinder.findPath(<double>[
+            markerX,
+            markerY,
+          ], guidePath.first);
+
+          if (approach.isNotEmpty) {
+            final path = <List<double>>[
+              ...approach,
+              for (var i = 1; i < guidePath.length; i++) guidePath[i],
+            ];
+
+            final remainingHops = _floorHopDistance(
+              building.id,
+              section.target,
+              targetFloor,
+            );
+
+            if (remainingHops != null) {
+              final cost = _routeLength(path) + remainingHops * 150.0;
+              if (cost < bestCost) {
+                bestCost = cost;
+                best = StairRouteLeg(section: section, path: path);
+              }
+            }
+          }
+        }
+
+        // IMPORTANT: the authored guide changes route geometry only.
+        // Stair activation/floor-transition logic remains unchanged.
+        continue;
+      }
+
       for (final stairLane in _stairLaneRoutes(building, section)) {
         if (stairLane.length < 2) continue;
 
@@ -644,6 +943,99 @@ class WorldNavigator {
     ];
   }
 
+  /// Find the next stair section that is in the same physical well as
+  /// [completed] and continues in the same vertical direction.
+  StairSection? _findNextSameWellStair(StairSection completed) {
+    final building = parent;
+    if (building == null) return null;
+
+    final goingDown = completed.target < completed.source;
+    final candidates =
+        _connections['${building.id}:$currentFloor'] ?? const <StairSection>[];
+
+    final completedCenter = completed.stair.localToWorld(
+      completed.width / 2,
+      completed.height / 2,
+    );
+
+    StairSection? best;
+    var bestDistance = double.infinity;
+
+    for (final candidate in candidates) {
+      if (candidate.source != currentFloor) continue;
+
+      // Skip the section we just completed — we need the NEXT one.
+      if (candidate.stair.id == completed.stair.id &&
+          candidate.source == completed.source &&
+          candidate.target == completed.target) {
+        continue;
+      }
+
+      final sameDirection = goingDown
+          ? candidate.target < candidate.source
+          : candidate.target > candidate.source;
+      if (!sameDirection) continue;
+
+      final center = candidate.stair.localToWorld(
+        candidate.width / 2,
+        candidate.height / 2,
+      );
+      final distance = hypot(
+        center[0] - completedCenter[0],
+        center[1] - completedCenter[1],
+      );
+
+      final sameWellTolerance = math.max(
+        40.0,
+        math.max(
+              math.max(completed.width, completed.height),
+              math.max(candidate.width, candidate.height),
+            ) *
+            0.65,
+      );
+
+      if (distance > sameWellTolerance || distance >= bestDistance) continue;
+
+      final lanePath = _stairLaneRoutes(building, candidate).first;
+      if (!_pathClearOfSurfaceHazards(lanePath, building.id, currentFloor)) {
+        continue;
+      }
+
+      bestDistance = distance;
+      best = candidate;
+    }
+
+    return best;
+  }
+
+  /// Returns true when the next stair after [completed] is in the same physical
+  /// well and continues in the same direction, meaning the player can proceed
+  /// directly to the next flight without a turnaround.
+  bool hasSameWellNextStair(StairSection completed) {
+    return _findNextSameWellStair(completed) != null;
+  }
+
+  /// Clear stair exit/lock state so that the next stair in the same well can be
+  /// immediately armed and routed to. Only call this when same-well continuation
+  /// is confirmed.
+  void clearStairLockForSameWell() {
+    exitAreas = [];
+    waitFloor = null;
+    phase = TransitionPhase.onFloor;
+
+    // Reset previousPoint so _detectStairEntry can detect a fresh
+    // source-boundary crossing for the next stair. Without this, prevRaw
+    // stays at ≈0 (source end of the next stair) and the crossing check
+    // `raw > prevRaw + 1e-9` never triggers when the player hasn't moved.
+    previousPoint = null;
+
+    // _lockOverlapping may have locked the NEXT stair's id (spatial index
+    // order is not guaranteed). Unlock everything except the stair we just
+    // completed so the next same-well stair can be armed immediately.
+    final completedId = lastCompletedStair?.stair.id;
+    lockedSections.removeWhere((id) => id != completedId);
+  }
+
   /// Route geometry to show while the player is physically walking an active
   /// staircase. It starts at the player's live position and stays on the SAME
   /// physical stair lane the player is already using.
@@ -654,6 +1046,9 @@ class WorldNavigator {
     final t = transition;
     final building = parent;
     if (t == null || building == null) return const <List<double>>[];
+
+    final authoredActive = _remainingAuthoredWaypointGuide(building, t.section);
+    if (authoredActive.length >= 2) return authoredActive;
 
     final transform =
         _transforms[building.id] ?? FloorTransform.build(building);
@@ -713,58 +1108,7 @@ class WorldNavigator {
         ? _stairLaneFactor(completed)
         : (stairLocal[0] / completed.width).clamp(0.12, 0.88).toDouble();
 
-    // Find the next section in the SAME physical stairwell and continuing in
-    // the same vertical direction. We only need it to know which half of the
-    // landing to cross toward.
-    final goingDown = completed.target < completed.source;
-    final candidates =
-        _connections['${building.id}:$currentFloor'] ?? const <StairSection>[];
-
-    StairSection? nextSameWell;
-    var bestDistance = double.infinity;
-
-    final completedCenter = completed.stair.localToWorld(
-      completed.width / 2,
-      completed.height / 2,
-    );
-
-    for (final candidate in candidates) {
-      final sameDirection = goingDown
-          ? candidate.target < candidate.source
-          : candidate.target > candidate.source;
-      if (!sameDirection) continue;
-
-      final center = candidate.stair.localToWorld(
-        candidate.width / 2,
-        candidate.height / 2,
-      );
-      final distance = hypot(
-        center[0] - completedCenter[0],
-        center[1] - completedCenter[1],
-      );
-
-      final sameWellTolerance = math.max(
-        40.0,
-        math.max(
-              math.max(completed.width, completed.height),
-              math.max(candidate.width, candidate.height),
-            ) *
-            0.65,
-      );
-
-      if (distance > sameWellTolerance || distance >= bestDistance) continue;
-
-      // If this next flight is covered by fire, do NOT lead the player across
-      // the landing toward it. Exit straight and let the next route choose a
-      // different staircase.
-      final lanePath = _stairLaneRoutes(building, candidate).first;
-      if (!_pathClearOfSurfaceHazards(lanePath, building.id, currentFloor)) {
-        continue;
-      }
-
-      bestDistance = distance;
-      nextSameWell = candidate;
-    }
+    final nextSameWell = _findNextSameWellStair(completed);
 
     final nextLane = nextSameWell == null
         ? currentLane
@@ -821,17 +1165,180 @@ class WorldNavigator {
     return total;
   }
 
+  /// Minimum modeled clearance from any Floor-1 hazard along a route.
+  ///
+  /// The value is measured from the VISIBLE hazard edge. A route that is
+  /// farther from danger gets a larger value.
+  double _routeMinimumHazardClearance(
+    List<List<double>> path,
+    List<HazardZone> routeHazards,
+  ) {
+    if (path.length < 2 || routeHazards.isEmpty) {
+      return double.infinity;
+    }
+
+    var minimum = double.infinity;
+
+    for (var i = 1; i < path.length; i++) {
+      final a = path[i - 1];
+      final b = path[i];
+      final dx = b[0] - a[0];
+      final dy = b[1] - a[1];
+      final length = math.sqrt(dx * dx + dy * dy);
+      final samples = math.max(1, (length / 12).ceil());
+
+      for (var s = 0; s <= samples; s++) {
+        final t = s / samples;
+        final px = a[0] + dx * t;
+        final py = a[1] + dy * t;
+
+        for (final hazard in routeHazards) {
+          minimum = math.min(minimum, hazard.edgeDistanceTo(px, py));
+        }
+      }
+    }
+
+    return minimum;
+  }
+
+  /// Integrated modeled hazard exposure along the route.
+  ///
+  /// This is a tie-break after minimum clearance. Lower is better.
+  double _routeHazardExposure(
+    List<List<double>> path,
+    List<HazardZone> routeHazards,
+  ) {
+    if (path.length < 2 || routeHazards.isEmpty) return 0.0;
+
+    var exposure = 0.0;
+
+    for (var i = 1; i < path.length; i++) {
+      final a = path[i - 1];
+      final b = path[i];
+      final dx = b[0] - a[0];
+      final dy = b[1] - a[1];
+      final length = math.sqrt(dx * dx + dy * dy);
+      if (length <= 1e-9) continue;
+
+      final samples = math.max(1, (length / 12).ceil());
+      final sampleLength = length / samples;
+
+      for (var s = 0; s <= samples; s++) {
+        final t = s / samples;
+        final px = a[0] + dx * t;
+        final py = a[1] + dy * t;
+
+        var localRisk = 0.0;
+        for (final hazard in routeHazards) {
+          localRisk = math.max(localRisk, hazard.proximityRisk(px, py));
+        }
+        exposure += localRisk * sampleLength;
+      }
+    }
+
+    return exposure;
+  }
+
+  int _compareEvacuationOptionsBySafety(
+    EvacuationGateOption a,
+    EvacuationGateOption b,
+    List<HazardZone> routeHazards,
+  ) {
+    if (routeHazards.isEmpty ||
+        a.previewRoute.length < 2 ||
+        b.previewRoute.length < 2) {
+      final delta = a.score - b.score;
+      if (delta.abs() > 1e-6) return delta < 0 ? -1 : 1;
+      if (a.kind == b.kind) return 0;
+      return a.kind == 'main_gate' ? -1 : 1;
+    }
+
+    const preferredSafetyClearance = 220.0;
+
+    final aClearance = _routeMinimumHazardClearance(
+      a.previewRoute,
+      routeHazards,
+    );
+    final bClearance = _routeMinimumHazardClearance(
+      b.previewRoute,
+      routeHazards,
+    );
+
+    final aEffective = math.min(aClearance, preferredSafetyClearance);
+    final bEffective = math.min(bClearance, preferredSafetyClearance);
+
+    final clearanceDelta = aEffective - bEffective;
+
+    // MAIN ROUTE is selected by modeled hazard clearance FIRST.
+    if (clearanceDelta.abs() > 12.0) {
+      return clearanceDelta > 0 ? -1 : 1;
+    }
+
+    final aExposure = _routeHazardExposure(a.previewRoute, routeHazards);
+    final bExposure = _routeHazardExposure(b.previewRoute, routeHazards);
+
+    final exposureDelta = aExposure - bExposure;
+    if (exposureDelta.abs() > 1e-6) {
+      return exposureDelta < 0 ? -1 : 1;
+    }
+
+    final lengthDelta = a.score - b.score;
+    if (lengthDelta.abs() > 1e-6) {
+      return lengthDelta < 0 ? -1 : 1;
+    }
+
+    if (a.kind == b.kind) return 0;
+    return a.kind == 'main_gate' ? -1 : 1;
+  }
+
   /// Stage 6B: rank official campus exits from best to fallback.
   ///
   /// On Campus/Floor 1 this uses the real road-aware collision-safe route.
   /// On upper floors the indoor descent cost is mostly shared by every gate,
   /// so a road-aware campus egress estimate is used until Floor 1 is reached.
+  bool isCampusGateBlocked(String kind) {
+    final target = campusGateApproach(kind);
+    if (target == null) return true;
+
+    for (final hazard in hazards) {
+      if (hazard.floor != 1) continue;
+
+      final dx = target[0] - hazard.x;
+      final dy = target[1] - hazard.y;
+      final distance = math.sqrt(dx * dx + dy * dy);
+
+      // If the gate approach lies inside the modeled hazard + mandatory
+      // clearance, that exit is unavailable and must not be selected.
+      if (distance <= hazard.radius + hazardSafetyClearance + collisionRadius) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  bool get allEvacuationGatesBlocked {
+    const kinds = <String>['main_gate', 'secondary_gate'];
+
+    var configured = 0;
+    var blocked = 0;
+
+    for (final kind in kinds) {
+      if (campusGateApproach(kind) == null) continue;
+      configured++;
+      if (isCampusGateBlocked(kind)) blocked++;
+    }
+
+    return configured > 0 && blocked == configured;
+  }
+
   List<EvacuationGateOption> rankEvacuationGates() {
     if (transition != null) return const <EvacuationGateOption>[];
 
     final options = <EvacuationGateOption>[];
     for (final kind in const ['main_gate', 'secondary_gate']) {
       final target = campusGateApproach(kind);
+      if (isCampusGateBlocked(kind)) continue;
       if (target == null) continue;
 
       if (parent == null || currentFloor == 1) {
@@ -852,15 +1359,13 @@ class WorldNavigator {
       options.add(EvacuationGateOption(kind: kind, score: estimate));
     }
 
-    options.sort((a, b) {
-      final delta = a.score - b.score;
-      if (delta.abs() > 1e-6) return delta < 0 ? -1 : 1;
+    final floorOneHazards = hazards
+        .where((hazard) => hazard.floor == 1)
+        .toList(growable: false);
 
-      // Stable tie-break only. "Main Gate" is not automatically the main
-      // evacuation route unless both complete estimates are effectively equal.
-      if (a.kind == b.kind) return 0;
-      return a.kind == 'main_gate' ? -1 : 1;
-    });
+    options.sort(
+      (a, b) => _compareEvacuationOptionsBySafety(a, b, floorOneHazards),
+    );
     return options;
   }
 
@@ -942,6 +1447,8 @@ class WorldNavigator {
 
   /// Route the current Campus/Floor-1 position to a campus evacuation gate.
   List<List<double>> findCampusGateRoute(String kind) {
+    if (isCampusGateBlocked(kind)) return const <List<double>>[];
+
     final target = campusGateApproach(kind);
     if (target == null || transition != null) {
       return const <List<double>>[];

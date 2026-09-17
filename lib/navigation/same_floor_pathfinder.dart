@@ -7,6 +7,16 @@ import 'runtime_index.dart';
 ///
 /// This is intentionally independent from stairs, hazards and rendering so the
 /// same route engine can be reused by later evacuation-simulation stages.
+class RouteRiskZone {
+  final double x;
+  final double y;
+
+  /// Mandatory blocked radius, including configured safety clearance.
+  final double radius;
+
+  const RouteRiskZone({required this.x, required this.y, required this.radius});
+}
+
 class SameFloorPathfinder {
   final List<Barrier> barriers;
   final double playerRadius;
@@ -22,6 +32,18 @@ class SameFloorPathfinder {
   /// 0.35 means road travel costs 65% of the same off-road distance.
   final double preferredAreaDiscount;
 
+  /// Dynamic hazard zones used as a continuous A* risk field.
+  final List<RouteRiskZone> riskZones;
+
+  /// Strength of the hazard-distance penalty.
+  final double riskWeight;
+
+  /// Distance outside a risk zone where proximity still affects route cost.
+  final double riskInfluenceDistance;
+
+  /// Emergency mode: use a valid preferred-road route directly.
+  final bool forcePreferredRoute;
+
   late final RuntimeIndex<Barrier> _barrierIndex;
   late final RuntimeIndex<PolygonBarrier>? _preferredAreaIndex;
 
@@ -33,11 +55,16 @@ class SameFloorPathfinder {
     this.cornerPadding = 2,
     List<PolygonBarrier> preferredAreas = const [],
     this.preferredAreaDiscount = 0.35,
+    this.forcePreferredRoute = false,
+    List<RouteRiskZone> riskZones = const [],
+    this.riskWeight = 0,
+    this.riskInfluenceDistance = 320,
   }) : assert(
          preferredAreaDiscount >= 0 && preferredAreaDiscount < 1,
          'preferredAreaDiscount must be in [0, 1)',
        ),
        preferredAreas = List<PolygonBarrier>.unmodifiable(preferredAreas),
+       riskZones = List<RouteRiskZone>.unmodifiable(riskZones),
        barriers = List<Barrier>.unmodifiable(barriers) {
     _barrierIndex = RuntimeIndex<Barrier>(
       this.barriers,
@@ -62,6 +89,8 @@ class SameFloorPathfinder {
     if (preferredAreas.isNotEmpty) {
       final roadRoute = _findPreferredCenterlinePath(start, goal);
       if (roadRoute.isNotEmpty) {
+        if (forcePreferredRoute) return roadRoute;
+
         // Road preference must not become absolute. Compare the physical
         // centerline route against the ordinary shortest collision-safe route.
         // A fully road-based route may be about 1 / 0.65 ~= 1.54x longer and
@@ -73,21 +102,26 @@ class SameFloorPathfinder {
           width: width,
           height: height,
           cornerPadding: cornerPadding,
+          riskZones: riskZones,
+          riskWeight: riskWeight,
+          riskInfluenceDistance: riskInfluenceDistance,
         );
         final plainRoute = plainPathfinder.findPath(start, goal);
 
-        if (plainRoute.isEmpty ||
-            _polylineLength(roadRoute) <= _polylineLength(plainRoute) * 1.55) {
-          return roadRoute;
-        }
-        return plainRoute;
+        if (plainRoute.isEmpty) return roadRoute;
+
+        final roadCost = _routeCost(roadRoute);
+        final plainCost = _routeCost(plainRoute);
+        return roadCost <= plainCost ? roadRoute : plainRoute;
       }
     }
 
     // With no preference regions the original fast direct-path behavior
     // is preserved. When roads are configured, A* must be allowed to compare
     // the direct line against a slightly longer but preferred-road route.
-    if (preferredAreas.isEmpty && lineIsWalkable(start, goal)) {
+    if (preferredAreas.isEmpty &&
+        riskZones.isEmpty &&
+        lineIsWalkable(start, goal)) {
       return [List<double>.from(start), List<double>.from(goal)];
     }
 
@@ -150,6 +184,9 @@ class SameFloorPathfinder {
       width: width,
       height: height,
       cornerPadding: cornerPadding,
+      riskZones: riskZones,
+      riskWeight: riskWeight,
+      riskInfluenceDistance: riskInfluenceDistance,
     );
 
     final startAccess = _roadAccessCandidates(
@@ -186,9 +223,9 @@ class SameFloorPathfinder {
         // Long diagonal jumps onto a farther road are deliberately expensive.
         const accessPenalty = 4.0;
         final total =
-            _polylineLength(s.path) * accessPenalty +
-            _polylineLength(roadPath) +
-            _polylineLength(g.path) * accessPenalty;
+            _routeCost(s.path) * accessPenalty +
+            _routeCost(roadPath) +
+            _routeCost(g.path) * accessPenalty;
 
         if (total >= bestCost) continue;
 
@@ -357,7 +394,7 @@ class SameFloorPathfinder {
           bNode,
         ));
 
-        graph.connect(aNode, bNode, _pointDistance(a, b));
+        graph.connect(aNode, bNode, _edgeCost(a, b));
       }
     }
 
@@ -382,7 +419,7 @@ class SameFloorPathfinder {
         final a = graph.points[ordered[i - 1]];
         final b = graph.points[ordered[i]];
         if (!lineIsWalkable(a, b)) continue;
-        graph.connect(ordered[i - 1], ordered[i], _pointDistance(a, b));
+        graph.connect(ordered[i - 1], ordered[i], _edgeCost(a, b));
       }
     }
 
@@ -516,10 +553,10 @@ class SameFloorPathfinder {
     return out;
   }
 
-  double _polylineLength(List<List<double>> path) {
+  double _routeCost(List<List<double>> path) {
     var total = 0.0;
     for (var i = 1; i < path.length; i++) {
-      total += _pointDistance(path[i - 1], path[i]);
+      total += _edgeCost(path[i - 1], path[i]);
     }
     return total;
   }
@@ -636,6 +673,18 @@ class SameFloorPathfinder {
       );
     }
 
+    // Risk-field waypoints give A* real alternatives farther away from danger
+    // instead of only obstacle-corner points close to a hazard.
+    for (final zone in riskZones) {
+      for (final factor in const [0.45, 0.9]) {
+        final ring = zone.radius + riskInfluenceDistance * factor;
+        for (var i = 0; i < 8; i++) {
+          final angle = i * math.pi / 4;
+          add(zone.x + math.cos(angle) * ring, zone.y + math.sin(angle) * ring);
+        }
+      }
+    }
+
     return nodes;
   }
 
@@ -743,7 +792,7 @@ class SameFloorPathfinder {
   List<List<double>> _simplify(List<List<double>> path) {
     if (path.length <= 2) return path;
 
-    if (preferredAreas.isNotEmpty) {
+    if (preferredAreas.isNotEmpty || riskZones.isNotEmpty) {
       final simplified = <List<double>>[path.first];
       var anchor = 0;
 
@@ -828,10 +877,45 @@ class SameFloorPathfinder {
     final dx = b[0] - a[0];
     final dy = b[1] - a[1];
     final length = math.sqrt(dx * dx + dy * dy);
-    if (length <= 1e-9 || preferredAreas.isEmpty) return length;
+    if (length <= 1e-9) return 0;
 
-    final coverage = _preferredCoverage(a, b);
-    return length * (1 - preferredAreaDiscount * coverage);
+    var cost = length;
+
+    if (preferredAreas.isNotEmpty) {
+      final coverage = _preferredCoverage(a, b);
+      cost *= 1 - preferredAreaDiscount * coverage;
+    }
+
+    if (riskZones.isEmpty || riskWeight <= 0) return cost;
+
+    final samples = math.max(5, (length / 24).ceil());
+    var accumulatedRisk = 0.0;
+
+    for (var i = 0; i < samples; i++) {
+      final t = (i + 0.5) / samples;
+      final x = a[0] + dx * t;
+      final y = a[1] + dy * t;
+
+      var pointRisk = 0.0;
+      for (final zone in riskZones) {
+        final zx = x - zone.x;
+        final zy = y - zone.y;
+        final edgeDistance = math.sqrt(zx * zx + zy * zy) - zone.radius;
+
+        if (edgeDistance >= riskInfluenceDistance) continue;
+
+        final normalized = edgeDistance <= 0
+            ? 1.0
+            : (1.0 - edgeDistance / riskInfluenceDistance).clamp(0.0, 1.0);
+
+        pointRisk += normalized * normalized * normalized;
+      }
+
+      accumulatedRisk += pointRisk;
+    }
+
+    final averageRisk = accumulatedRisk / samples;
+    return cost + length * riskWeight * averageRisk;
   }
 
   double _preferredCoverage(List<double> a, List<double> b) {
