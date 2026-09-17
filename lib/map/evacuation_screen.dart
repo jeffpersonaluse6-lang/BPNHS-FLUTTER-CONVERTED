@@ -28,6 +28,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   double joystickY = 0;
   bool moveMode = false;
   bool followActive = false;
+  int _cameraSurfaceHoldFrames = 0;
 
   // Mobile invisible joystick: finger-down point is its center.
   Offset? _mobileMoveOrigin;
@@ -149,15 +150,25 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       // from this same frame instead of reacting one frame late.
       _updateNavigatorPreservingCamera();
 
-      camera.follow(
-        [navigator.markerX, navigator.markerY],
-        _cameraFollowDt(dt),
-        moving: moved,
-        diameter: playerSize,
-      );
+      if (_cameraSurfaceHoldFrames > 0) {
+        _cameraSurfaceHoldFrames--;
+      } else {
+        camera.follow(
+          [navigator.markerX, navigator.markerY],
+          _cameraFollowDt(dt),
+          moving: moved,
+          diameter: playerSize,
+        );
+      }
       _updateLiveRoute(dt);
       setState(() {});
     } else if (followActive) {
+      if (_cameraSurfaceHoldFrames > 0) {
+        _cameraSurfaceHoldFrames--;
+        if (routePresentationChanged || shooterMoved) setState(() {});
+        return;
+      }
+
       final changed = camera.follow(
         [navigator.markerX, navigator.markerY],
         _cameraFollowDt(dt),
@@ -180,7 +191,27 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   }
 
   void _updateNavigatorPreservingCamera() {
+    final beforeBuildingId = navigator.parent?.id;
+    final beforeFloor = navigator.currentFloor;
+    final beforeView = navigator.view;
+
+    final beforeCameraX = camera.x;
+    final beforeCameraY = camera.y;
+
     navigator.update(navigator.markerX, navigator.markerY);
+
+    final surfaceChanged =
+        beforeBuildingId != navigator.parent?.id ||
+        beforeFloor != navigator.currentFloor ||
+        beforeView != navigator.view;
+
+    if (surfaceChanged) {
+      // The camera itself must not react during the transient frame where the
+      // renderer switches between campus/building/floor layers.
+      camera.x = beforeCameraX;
+      camera.y = beforeCameraY;
+      _cameraSurfaceHoldFrames = 2;
+    }
   }
 
   void _beginRoutePresentation([String? label]) {
@@ -328,18 +359,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                       color: const Color(0xFFD5DEE8),
                       child: LayoutBuilder(
                         builder: (context, constraints) {
-                          final newWidth = constraints.maxWidth;
-                          final newHeight = constraints.maxHeight;
-
-                          if ((camera.width - newWidth).abs() > 0.01 ||
-                              (camera.height - newHeight).abs() > 0.01) {
-                            // Keep the same world point at the visual center
-                            // when UI/layout size changes.
-                            camera.x += (newWidth - camera.width) / 2;
-                            camera.y += (newHeight - camera.height) / 2;
-                            camera.width = newWidth;
-                            camera.height = newHeight;
-                          }
+                          camera.width = constraints.maxWidth;
+                          camera.height = constraints.maxHeight;
 
                           return GestureDetector(
                             onTapUp: _firePlacementMode
@@ -572,25 +593,15 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           children: [
             SizedBox(
               width: isCompact ? 240 : 320,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    subtitle,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF183B56),
-                    ),
-                  ),
-                  Text(
-                    status,
-                    style: const TextStyle(
-                      color: Color(0xFF31475E),
-                      fontSize: 14,
-                    ),
-                  ),
-                ],
+              child: Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF183B56),
+                ),
               ),
             ),
             const SizedBox(width: 16),
