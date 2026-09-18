@@ -170,49 +170,96 @@ class MapPainter extends CustomPainter {
 
     for (final hazard in navigator.visibleHazards) {
       final center = Offset(hazard.x, hazard.y);
-
-      final safetyFill = Paint()
-        ..color = const Color(0x12F59E0B)
-        ..style = PaintingStyle.fill;
-      canvas.drawCircle(
-        center,
-        hazard.radius + hazardSafetyClearance,
-        safetyFill,
-      );
-
-      final safetyBorder = Paint()
-        ..color = const Color(0x88F59E0B)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2 / safeScale;
-      canvas.drawCircle(
-        center,
-        hazard.radius + hazardSafetyClearance,
-        safetyBorder,
-      );
-
+      final isEarthquake = hazard.kind == HazardKind.earthquake;
       final isFire = hazard.kind == HazardKind.fire;
 
+      if (!isEarthquake) {
+        final safetyFill = Paint()
+          ..color = const Color(0x12F59E0B)
+          ..style = PaintingStyle.fill;
+        canvas.drawCircle(
+          center,
+          hazard.radius + hazardSafetyClearance,
+          safetyFill,
+        );
+
+        final safetyBorder = Paint()
+          ..color = const Color(0x88F59E0B)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2 / safeScale;
+        canvas.drawCircle(
+          center,
+          hazard.radius + hazardSafetyClearance,
+          safetyBorder,
+        );
+      }
+
+      final Color fillColor;
+      final Color borderColor;
+      final Color coreColor;
+      final Color labelColor;
+      final String label;
+
+      if (isEarthquake) {
+        fillColor = const Color(0x558B7355);
+        borderColor = const Color(0xFF6B5B45);
+        coreColor = const Color(0xFF4B4337);
+        labelColor = const Color(0xFF4B4337);
+        label = 'BLOCKED';
+      } else if (isFire) {
+        fillColor = const Color(0x44DC2626);
+        borderColor = const Color(0xFFE11D48);
+        coreColor = const Color(0xFFF97316);
+        labelColor = const Color(0xFF991B1B);
+        label = 'FIRE';
+      } else {
+        fillColor = const Color(0x337C3AED);
+        borderColor = const Color(0xFFA855F7);
+        coreColor = const Color(0xFF581C87);
+        labelColor = const Color(0xFF581C87);
+        label = 'ACTIVE THREAT';
+      }
+
       final fill = Paint()
-        ..color = isFire ? const Color(0x44DC2626) : const Color(0x337C3AED)
+        ..color = fillColor
         ..style = PaintingStyle.fill;
       canvas.drawCircle(center, hazard.radius, fill);
 
       final border = Paint()
-        ..color = isFire ? const Color(0xFFE11D48) : const Color(0xFFA855F7)
+        ..color = borderColor
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3 / safeScale;
       canvas.drawCircle(center, hazard.radius, border);
 
-      final core = Paint()
-        ..color = isFire ? const Color(0xFFF97316) : const Color(0xFF581C87)
-        ..style = PaintingStyle.fill;
-      canvas.drawCircle(center, 11 / safeScale, core);
+      if (isEarthquake) {
+        final crossPaint = Paint()
+          ..color = coreColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 4 / safeScale
+          ..strokeCap = StrokeCap.round;
+        final d = 10 / safeScale;
+        canvas.drawLine(
+          Offset(hazard.x - d, hazard.y - d),
+          Offset(hazard.x + d, hazard.y + d),
+          crossPaint,
+        );
+        canvas.drawLine(
+          Offset(hazard.x + d, hazard.y - d),
+          Offset(hazard.x - d, hazard.y + d),
+          crossPaint,
+        );
+      } else {
+        final core = Paint()
+          ..color = coreColor
+          ..style = PaintingStyle.fill;
+        canvas.drawCircle(center, 11 / safeScale, core);
+      }
 
       final textPainter = TextPainter(
         text: TextSpan(
-          text: isFire ? 'FIRE' : 'SHOOTER',
+          text: label,
           style: TextStyle(
-            color: isFire ? const Color(0xFF991B1B) : const Color(0xFF581C87),
+            color: labelColor,
             fontSize: 11 / safeScale,
             fontWeight: FontWeight.w800,
           ),

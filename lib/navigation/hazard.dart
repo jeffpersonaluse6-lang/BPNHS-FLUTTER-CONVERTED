@@ -6,7 +6,7 @@ const double hazardSafetyClearance = 45.0;
 const double hazardComfortClearance = 110.0;
 const double hazardRiskPenaltyWeight = 8.0;
 
-enum HazardKind { fire, activeShooter }
+enum HazardKind { fire, earthquake, activeShooter }
 
 class HazardZone {
   final String id;
@@ -35,7 +35,10 @@ class HazardZone {
   /// This makes fire an unsafe no-route zone while still giving A* corners
   /// it can route around.
   List<Barrier> routingBarriers({double safetyMargin = 0}) {
-    final margin = safetyMargin < 0 ? 0.0 : safetyMargin;
+    final requestedMargin = safetyMargin < 0 ? 0.0 : safetyMargin;
+    // Earthquake zones represent debris/collapsed/impassable pathways.
+    // Their radius is the blocked footprint itself, with no fire-style buffer.
+    final margin = kind == HazardKind.earthquake ? 0.0 : requestedMargin;
     return <Barrier>[
       Barrier(startX: x, startY: y, endX: x, endY: y, radius: radius + margin),
     ];

@@ -15,6 +15,7 @@ class BpnhsApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       title: 'BPNHS Evacuation Navigator',
       theme: ThemeData(
         colorSchemeSeed: const Color(0xFF12345A),

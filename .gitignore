@@ -46,3 +46,7 @@ app.*.map.json
 /windows/flutter/ephemeral/
 /linux/flutter/ephemeral/
 /macos/Flutter/ephemeral/
+
+# Local backup folders
+.*_backup/
+.before_clean_waypoint_redesign/

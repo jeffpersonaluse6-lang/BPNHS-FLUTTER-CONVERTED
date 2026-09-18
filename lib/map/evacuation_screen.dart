@@ -36,22 +36,26 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
   // Fire simulation placement mode. Hazards are runtime-only.
   bool _firePlacementMode = false;
-  double _fireRadius = 55;
+  static const double _fireHazardRadius = 55;
   String? _selectedFireHazardId;
+
+  // Earthquake simulation: manually marked debris/damaged/blocked pathways.
+  bool _earthquakePlacementMode = false;
+  static const double _earthquakeBlockageRadius = 55;
+  String? _selectedEarthquakeHazardId;
 
   // Active-shooter simulation uses manually reported unsafe areas.
   bool _activeShooterPlacementMode = false;
-  double _activeShooterRadius = 70;
+  static const double _activeThreatRadius = 70;
   String? _selectedActiveShooterHazardId;
 
   // One simulated moving shooter. The hazard circle follows this actor.
   String? _activeShooterActorId;
-  bool _activeShooterPathMode = false;
   List<List<double>> _activeShooterPath = const <List<double>>[];
   int _activeShooterPathIndex = 1;
   int _activeShooterPathDirection = 1;
   bool _activeShooterMoving = false;
-  double _activeShooterSpeed = 60;
+  final double _activeShooterSpeed = 60;
   double _movingShooterRerouteElapsed = 0;
   static const double _movingShooterRerouteInterval = 0.30;
 
@@ -365,10 +369,10 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                           return GestureDetector(
                             onTapUp: _firePlacementMode
                                 ? _onFireTap
+                                : _earthquakePlacementMode
+                                ? _onEarthquakeTap
                                 : _activeShooterPlacementMode
                                 ? _onActiveShooterTap
-                                : _activeShooterPathMode
-                                ? _onActiveShooterPathTap
                                 : _onMapTap,
                             onScaleStart: _onScaleStart,
                             onScaleUpdate: _onScaleUpdate,
@@ -402,13 +406,19 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                 ),
                 if (moveMode && !isMobile)
                   Positioned(right: 30, bottom: 30, child: _buildJoystick()),
-                if (isMobile) _buildMobileFloatingStatus(subtitle, status),
                 if (isMobile) _buildMobileFeatureTray(subtitle, status),
                 if (_firePlacementMode || _selectedFireHazardId != null)
                   Positioned(
                     left: 30,
                     bottom: 30,
                     child: _buildFireResizePanel(),
+                  ),
+                if (_earthquakePlacementMode ||
+                    _selectedEarthquakeHazardId != null)
+                  Positioned(
+                    left: 30,
+                    bottom: 30,
+                    child: _buildEarthquakeResizePanel(),
                   ),
                 if (_activeShooterPlacementMode ||
                     _selectedActiveShooterHazardId != null)
@@ -422,43 +432,6 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildMobileFloatingStatus(String subtitle, String status) {
-    final top = MediaQuery.paddingOf(context).top + 8;
-
-    return Positioned(
-      left: 10,
-      right: 72,
-      top: top,
-      child: IgnorePointer(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFF12345A).withValues(alpha: 0.90),
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox.shrink(),
-              Text(
-                subtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Color(0xFFDCE8F7),
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              SizedBox.shrink(key: ValueKey(status)),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -562,6 +535,23 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                   ],
                 ),
               ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 3, 8, 5),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 42,
+                  child: FilledButton.icon(
+                    onPressed: _showEmergencySimulationMenu,
+                    icon: const Icon(Icons.emergency, size: 19),
+                    label: const Text('EMERGENCY SIMULATION'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFFB42318),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                    ),
+                  ),
+                ),
+              ),
               ConstrainedBox(
                 constraints: const BoxConstraints(maxHeight: 92),
 
@@ -578,6 +568,103 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     return const SizedBox.shrink();
   }
 
+  Future<void> _showEmergencySimulationMenu() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const ListTile(
+                  title: Text(
+                    'Emergency Simulation',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text('Choose a simulated emergency scenario'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.local_fire_department),
+                  title: const Text('Fire'),
+                  onTap: () => Navigator.pop(sheetContext, 'fire'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.vibration),
+                  title: const Text('Earthquake'),
+                  onTap: () => Navigator.pop(sheetContext, 'earthquake'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.warning_amber_rounded),
+                  title: const Text('Active Shooter'),
+                  onTap: () => Navigator.pop(sheetContext, 'activeShooter'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (!mounted || choice == null) return;
+
+    if (choice == 'fire') {
+      setState(() {
+        _firePlacementMode = true;
+        _selectedFireHazardId = null;
+        _earthquakePlacementMode = false;
+        _selectedEarthquakeHazardId = null;
+        _activeShooterPlacementMode = false;
+        _activeShooterMoving = false;
+        _selectedActiveShooterHazardId = null;
+        routeSelectionMode = false;
+        moveMode = false;
+        joystickX = 0;
+        joystickY = 0;
+        routeStatus = 'Fire simulation: tap the hazard location';
+      });
+      return;
+    }
+
+    if (choice == 'earthquake') {
+      setState(() {
+        _firePlacementMode = false;
+        _selectedFireHazardId = null;
+        _earthquakePlacementMode = true;
+        _selectedEarthquakeHazardId = null;
+        _activeShooterPlacementMode = false;
+        _activeShooterMoving = false;
+        _selectedActiveShooterHazardId = null;
+        routeSelectionMode = false;
+        moveMode = false;
+        joystickX = 0;
+        joystickY = 0;
+        routeStatus =
+            'Earthquake simulation: tap debris or a damaged/blocked pathway';
+      });
+      return;
+    }
+
+    if (choice == 'activeShooter') {
+      setState(() {
+        _firePlacementMode = false;
+        _selectedFireHazardId = null;
+        _earthquakePlacementMode = false;
+        _selectedEarthquakeHazardId = null;
+        _activeShooterPlacementMode = true;
+        _activeShooterMoving = false;
+        _selectedActiveShooterHazardId = null;
+        routeSelectionMode = false;
+        moveMode = false;
+        joystickX = 0;
+        joystickY = 0;
+        routeStatus = 'Active Shooter: tap the reported unsafe/threat area';
+      });
+    }
+  }
+
   Widget _buildActionBar(String subtitle, String status) {
     final isCompact = MediaQuery.sizeOf(context).width < 700;
 
@@ -591,20 +678,22 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            SizedBox(
-              width: isCompact ? 240 : 320,
-              child: Text(
-                subtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF183B56),
+            if (navigator.parent != null) ...[
+              SizedBox(
+                width: isCompact ? 240 : 320,
+                child: Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF183B56),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 16),
+              const SizedBox(width: 16),
+            ],
             if (navigator.parent != null && navigator.currentFloor > 1) ...[
               ElevatedButton.icon(
                 onPressed: _startRouteToFloorOne,
@@ -622,71 +711,12 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
               const SizedBox(width: 8),
             ],
             ElevatedButton.icon(
-              onPressed: () {
-                setState(() {
-                  _firePlacementMode = !_firePlacementMode;
-                  _selectedFireHazardId = null;
-                  _activeShooterPlacementMode = false;
-                  _activeShooterPathMode = false;
-                  _selectedActiveShooterHazardId = null;
-                  routeSelectionMode = false;
-                  moveMode = false;
-                  joystickX = 0;
-                  joystickY = 0;
-                  routeStatus = _firePlacementMode
-                      ? 'Fire simulation: tap the hazard location'
-                      : (navigator.hazards.isEmpty
-                            ? null
-                            : 'Fire simulation active');
-                });
-              },
-              icon: Icon(
-                _firePlacementMode ? Icons.close : Icons.local_fire_department,
-              ),
-              label: Text(_firePlacementMode ? 'Cancel fire' : 'Place fire'),
+              onPressed: _showEmergencySimulationMenu,
+              icon: const Icon(Icons.emergency),
+              label: const Text('Emergency Simulation'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: _firePlacementMode
-                    ? const Color(0xFFFFE4E6)
-                    : Colors.white,
+                backgroundColor: Colors.white,
                 foregroundColor: const Color(0xFFB42318),
-              ),
-            ),
-            const SizedBox(width: 8),
-            ElevatedButton.icon(
-              onPressed: () {
-                setState(() {
-                  _activeShooterPlacementMode = !_activeShooterPlacementMode;
-                  _activeShooterPathMode = false;
-                  _activeShooterMoving = false;
-                  _selectedActiveShooterHazardId = null;
-                  _firePlacementMode = false;
-                  _selectedFireHazardId = null;
-                  routeSelectionMode = false;
-                  moveMode = false;
-                  joystickX = 0;
-                  joystickY = 0;
-                  routeStatus = _activeShooterPlacementMode
-                      ? 'Active-shooter simulation: tap to place the shooter'
-                      : (navigator.hazards.isEmpty
-                            ? null
-                            : 'Emergency simulation active');
-                });
-              },
-              icon: Icon(
-                _activeShooterPlacementMode
-                    ? Icons.close
-                    : Icons.warning_amber_rounded,
-              ),
-              label: Text(
-                _activeShooterPlacementMode
-                    ? 'Cancel shooter'
-                    : 'Place shooter',
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _activeShooterPlacementMode
-                    ? const Color(0xFFF3E8FF)
-                    : Colors.white,
-                foregroundColor: const Color(0xFF6B21A8),
               ),
             ),
             if (navigator.hazards.isNotEmpty) ...[
@@ -775,11 +805,11 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   }
 
   Widget _buildFireResizePanel() {
-    final editingPlacedFire = _selectedFireHazardId != null;
+    final placed = _selectedFireHazardId != null;
 
     return Container(
-      width: 230,
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+      width: 220,
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.95),
         borderRadius: BorderRadius.circular(14),
@@ -792,78 +822,105 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           ),
         ],
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.local_fire_department,
-                color: Color(0xFFB42318),
-                size: 20,
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  editingPlacedFire ? 'Resize fire' : 'Fire size',
-                  style: const TextStyle(
-                    color: Color(0xFF7A271A),
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
-                  ),
-                ),
-              ),
-              Text(
-                '${_fireRadius.round()}',
-                style: const TextStyle(
-                  color: Color(0xFF7A271A),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              if (editingPlacedFire)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  tooltip: 'Close resize controls',
-                  onPressed: () {
-                    setState(() {
-                      _selectedFireHazardId = null;
-                    });
-                  },
-                  icon: const Icon(Icons.close, size: 18),
-                ),
-            ],
+          const Icon(
+            Icons.local_fire_department,
+            color: Color(0xFFB42318),
+            size: 20,
           ),
-          Slider(
-            min: 25,
-            max: 120,
-            divisions: 19,
-            value: _fireRadius.clamp(25.0, 120.0),
-            activeColor: const Color(0xFFE11D48),
-            onChanged: (value) {
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              placed ? 'Fire hazard marked' : 'Tap map to place fire',
+              style: const TextStyle(
+                color: Color(0xFF7A271A),
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Close',
+            visualDensity: VisualDensity.compact,
+            onPressed: () {
               setState(() {
-                _fireRadius = value;
-                final id = _selectedFireHazardId;
-                if (id != null) {
-                  navigator.resizeHazard(id, value);
-                }
+                _firePlacementMode = false;
+                _selectedFireHazardId = null;
               });
             },
-            onChangeEnd: (_) {
-              final role = _evacuationRouteRole;
-              if (_selectedFireHazardId != null && role != null) {
-                _startRecommendedEvacuationRoute(
-                  alternative: role == 'alternative',
-                );
-              }
-            },
+            icon: const Icon(Icons.close, size: 18),
           ),
-          Text(
-            editingPlacedFire
-                ? 'Drag to resize this fire zone.'
-                : 'Choose the size, then tap the map.',
-            style: const TextStyle(color: Color(0xFF7C5B55), fontSize: 11),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEarthquakeResizePanel() {
+    return Container(
+      width: 230,
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.96),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF9B8A70)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x22000000),
+            blurRadius: 12,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.broken_image_outlined,
+            color: Color(0xFF6B5B45),
+            size: 20,
+          ),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text(
+              'Blocked pathway',
+              style: TextStyle(
+                color: Color(0xFF4B4337),
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          if (_selectedEarthquakeHazardId != null)
+            IconButton(
+              tooltip: 'Delete blockage',
+              visualDensity: VisualDensity.compact,
+              onPressed: () {
+                final id = _selectedEarthquakeHazardId;
+                if (id == null) return;
+
+                navigator.removeHazard(id);
+
+                setState(() {
+                  _selectedEarthquakeHazardId = null;
+                  _earthquakePlacementMode = false;
+                  routeStatus =
+                      'Earthquake blockage removed · recalculating route';
+                });
+
+                _rerouteAfterHazardChange();
+              },
+              icon: const Icon(Icons.delete_outline, size: 19),
+              color: const Color(0xFF6B5B45),
+            ),
+          IconButton(
+            tooltip: 'Close',
+            visualDensity: VisualDensity.compact,
+            onPressed: () {
+              setState(() {
+                _selectedEarthquakeHazardId = null;
+              });
+            },
+            icon: const Icon(Icons.close, size: 18),
           ),
         ],
       ),
@@ -871,14 +928,13 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   }
 
   Widget _buildActiveShooterResizePanel() {
-    final editingPlacedZone = _selectedActiveShooterHazardId != null;
-    final hasPath = _activeShooterPath.length >= 2;
+    final placed = _selectedActiveShooterHazardId != null;
 
     return Container(
-      width: 290,
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+      width: 235,
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.95),
+        color: Colors.white.withValues(alpha: 0.96),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFD8B4FE)),
         boxShadow: const [
@@ -889,162 +945,62 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           ),
         ],
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.warning_amber_rounded,
-                color: Color(0xFF6B21A8),
-                size: 20,
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  editingPlacedZone
-                      ? 'Active shooter'
-                      : 'Shooter unsafe radius',
-                  style: const TextStyle(
-                    color: Color(0xFF581C87),
-                    fontWeight: FontWeight.w700,
-                    fontSize: 14,
-                  ),
-                ),
-              ),
-              Text(
-                '${_activeShooterRadius.round()}',
-                style: const TextStyle(
-                  color: Color(0xFF581C87),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
+          const Icon(
+            Icons.warning_amber_rounded,
+            color: Color(0xFF6B21A8),
+            size: 20,
           ),
-          const SizedBox(height: 2),
-          const Text(
-            'Purple dot = shooter · light-purple circle = unsafe area',
-            style: TextStyle(color: Color(0xFF6B5A73), fontSize: 10.5),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              placed ? 'Active threat area' : 'Tap reported threat area',
+              style: const TextStyle(
+                color: Color(0xFF581C87),
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+              ),
+            ),
           ),
-          Slider(
-            min: 30,
-            max: 160,
-            divisions: 26,
-            value: _activeShooterRadius.clamp(30.0, 160.0),
-            activeColor: const Color(0xFF7E22CE),
-            onChanged: (value) {
-              setState(() {
-                _activeShooterRadius = value;
+          if (placed)
+            IconButton(
+              tooltip: 'Delete threat area',
+              visualDensity: VisualDensity.compact,
+              onPressed: () {
                 final id = _selectedActiveShooterHazardId;
-                if (id != null) navigator.resizeHazard(id, value);
+                if (id == null) return;
+
+                navigator.removeHazard(id);
+
+                setState(() {
+                  _selectedActiveShooterHazardId = null;
+                  if (_activeShooterActorId == id) {
+                    _activeShooterActorId = null;
+                  }
+                  _activeShooterPlacementMode = false;
+                  _activeShooterMoving = false;
+                  _activeShooterPath = const <List<double>>[];
+                  routeStatus =
+                      'Reported threat area removed · recalculating route';
+                });
+
+                _rerouteAfterHazardChange();
+              },
+              icon: const Icon(Icons.delete_outline, size: 19),
+              color: const Color(0xFF6B21A8),
+            ),
+          IconButton(
+            tooltip: 'Close',
+            visualDensity: VisualDensity.compact,
+            onPressed: () {
+              setState(() {
+                _activeShooterPlacementMode = false;
+                _selectedActiveShooterHazardId = null;
               });
             },
-            onChangeEnd: (_) {
-              if (_evacuationRouteRole != null) {
-                _updateLiveRoute(1.0);
-              }
-            },
+            icon: const Icon(Icons.close, size: 18),
           ),
-          if (!editingPlacedZone)
-            const Text(
-              'Choose the unsafe radius, then tap the map to place the shooter.',
-              style: TextStyle(color: Color(0xFF6B5A73), fontSize: 11),
-            ),
-          if (editingPlacedZone) ...[
-            const Divider(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _activeShooterPathMode
-                        ? _finishActiveShooterPath
-                        : _beginActiveShooterPath,
-                    icon: Icon(
-                      _activeShooterPathMode ? Icons.check : Icons.timeline,
-                      size: 17,
-                    ),
-                    label: Text(
-                      _activeShooterPathMode ? 'Finish path' : 'Set path',
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: hasPath ? _toggleActiveShooterMovement : null,
-                    icon: Icon(
-                      _activeShooterMoving ? Icons.pause : Icons.play_arrow,
-                      size: 18,
-                    ),
-                    label: Text(_activeShooterMoving ? 'Pause' : 'Start'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF7E22CE),
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 4),
-                IconButton(
-                  onPressed: _activeShooterPath.isNotEmpty
-                      ? _resetActiveShooterMovement
-                      : null,
-                  tooltip: 'Reset shooter',
-                  icon: const Icon(Icons.replay),
-                  color: const Color(0xFF6B21A8),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              _activeShooterPathMode
-                  ? 'Tap the map to add path points.'
-                  : hasPath
-                  ? '${_activeShooterPath.length - 1} path point(s) · patrols back and forth'
-                  : 'Press Set path, then tap at least one destination.',
-              style: const TextStyle(color: Color(0xFF6B5A73), fontSize: 10.5),
-            ),
-            const SizedBox(height: 6),
-            Row(
-              children: [
-                const Text(
-                  'Speed',
-                  style: TextStyle(
-                    color: Color(0xFF581C87),
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                Expanded(
-                  child: Slider(
-                    min: 20,
-                    max: 140,
-                    divisions: 24,
-                    value: _activeShooterSpeed.clamp(20.0, 140.0),
-                    activeColor: const Color(0xFF7E22CE),
-                    onChanged: (value) {
-                      setState(() {
-                        _activeShooterSpeed = value;
-                      });
-                    },
-                  ),
-                ),
-                SizedBox(
-                  width: 36,
-                  child: Text(
-                    '${_activeShooterSpeed.round()}',
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(
-                      color: Color(0xFF581C87),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
         ],
       ),
     );
@@ -1120,6 +1076,89 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     );
   }
 
+  void _rerouteAfterHazardChange() {
+    final activeRole = _evacuationRouteRole;
+
+    if (activeRole != null) {
+      _startRecommendedEvacuationRoute(
+        alternative: activeRole == 'alternative',
+      );
+      return;
+    }
+
+    if (routeTargetFloor != null && navigator.parent != null) {
+      setState(() {
+        _resetActiveWaypointProgress();
+        _routeRefreshElapsed = 0;
+        _refreshMultiFloorLeg();
+      });
+      return;
+    }
+
+    final campusDestination = _campusRouteDestination;
+    if (_routeAcrossBuildingExit && campusDestination != null) {
+      setState(() {
+        _routeRefreshElapsed = 0;
+
+        if (navigator.parent != null && navigator.currentFloor == 1) {
+          _beginCampusExitLeg();
+        } else if (navigator.parent == null) {
+          final refreshed = navigator.findSameFloorRoute(
+            campusDestination[0],
+            campusDestination[1],
+          );
+          routePoints = refreshed;
+          routeFloor = 1;
+          routeStatus = refreshed.isEmpty
+              ? 'No safe route around the simulated hazard'
+              : 'Route updated around the simulated hazard';
+        }
+      });
+      return;
+    }
+
+    if (routePoints.length >= 2) {
+      final destination = List<double>.from(routePoints.last);
+      final refreshed = navigator.findSameFloorRoute(
+        destination[0],
+        destination[1],
+      );
+
+      setState(() {
+        _routeRefreshElapsed = 0;
+        routePoints = refreshed;
+        routeStatus = refreshed.isEmpty
+            ? 'No safe route around the simulated hazard'
+            : 'Route updated around the simulated hazard';
+      });
+    }
+  }
+
+  void _onEarthquakeTap(TapUpDetails details) {
+    if (!_earthquakePlacementMode || navigator.transition != null) return;
+
+    final world = camera.world(<double>[
+      details.localPosition.dx,
+      details.localPosition.dy,
+    ]);
+
+    final blockage = navigator.addEarthquakeHazard(
+      world[0],
+      world[1],
+      radius: _earthquakeBlockageRadius,
+    );
+
+    setState(() {
+      _selectedEarthquakeHazardId = blockage.id;
+      _earthquakePlacementMode = false;
+      routeSelectionMode = false;
+      routeStatus =
+          'Earthquake blockage marked · recalculating available route';
+    });
+
+    _rerouteAfterHazardChange();
+  }
+
   void _onFireTap(TapUpDetails details) {
     if (!_firePlacementMode || navigator.transition != null) return;
 
@@ -1128,27 +1167,21 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       details.localPosition.dy,
     ]);
 
-    final activeRole = _evacuationRouteRole;
     final fire = navigator.addFireHazard(
       world[0],
       world[1],
-      radius: _fireRadius,
+      radius: _fireHazardRadius,
     );
 
     setState(() {
       _selectedFireHazardId = fire.id;
-      _fireRadius = fire.radius;
       _firePlacementMode = false;
       routeSelectionMode = false;
       routeStatus =
-          'Fire hazard placed · evacuation routes updated to avoid it';
+          'Fire hazard placed · recalculating route around the hazard';
     });
 
-    if (activeRole != null) {
-      _startRecommendedEvacuationRoute(
-        alternative: activeRole == 'alternative',
-      );
-    }
+    _rerouteAfterHazardChange();
   }
 
   void _clearSimulationHazards() {
@@ -1156,7 +1189,6 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     navigator.clearHazards();
     _activeShooterActorId = null;
     _selectedActiveShooterHazardId = null;
-    _activeShooterPathMode = false;
     _activeShooterMoving = false;
     _activeShooterPath = const <List<double>>[];
     _activeShooterPathIndex = 1;
@@ -1165,6 +1197,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     setState(() {
       _selectedFireHazardId = null;
       _firePlacementMode = false;
+      _selectedEarthquakeHazardId = null;
+      _earthquakePlacementMode = false;
       _selectedActiveShooterHazardId = null;
       _activeShooterPlacementMode = false;
       routeStatus = activeRole == null
@@ -1306,114 +1340,6 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     );
   }
 
-  void _beginActiveShooterPath() {
-    final id = _activeShooterActorId;
-    if (id == null) return;
-
-    final shooter = navigator.hazardById(id);
-    if (shooter == null) return;
-
-    setState(() {
-      _activeShooterMoving = false;
-      _activeShooterPathMode = true;
-      _activeShooterPath = <List<double>>[
-        <double>[shooter.x, shooter.y],
-      ];
-      _activeShooterPathIndex = 1;
-      _activeShooterPathDirection = 1;
-      routeStatus =
-          'Shooter path: tap points on the map, then press Finish path';
-    });
-  }
-
-  void _finishActiveShooterPath() {
-    setState(() {
-      _activeShooterPathMode = false;
-      routeStatus = _activeShooterPath.length >= 2
-          ? 'Shooter path ready · press Start'
-          : 'Shooter path needs at least one destination point';
-    });
-  }
-
-  void _onActiveShooterPathTap(TapUpDetails details) {
-    if (!_activeShooterPathMode || navigator.transition != null) return;
-
-    final id = _activeShooterActorId;
-    final shooter = id == null ? null : navigator.hazardById(id);
-    if (shooter == null) return;
-
-    final activeBuildingId = navigator.parent?.id;
-    final activeFloor = navigator.parent == null ? 1 : navigator.currentFloor;
-    if (!shooter.matchesSurface(activeBuildingId, activeFloor)) {
-      setState(() {
-        routeStatus = 'Return to the shooter floor before editing its path';
-      });
-      return;
-    }
-
-    final world = camera.world(<double>[
-      details.localPosition.dx,
-      details.localPosition.dy,
-    ]);
-
-    setState(() {
-      _activeShooterPath = <List<double>>[
-        ..._activeShooterPath,
-        <double>[world[0], world[1]],
-      ];
-      routeStatus =
-          'Shooter path: ${_activeShooterPath.length - 1} destination point(s)';
-    });
-  }
-
-  void _toggleActiveShooterMovement() {
-    if (_activeShooterPath.length < 2 || _activeShooterActorId == null) {
-      setState(() {
-        routeStatus = 'Set at least one shooter path destination first';
-      });
-      return;
-    }
-
-    setState(() {
-      _activeShooterPathMode = false;
-      _activeShooterMoving = !_activeShooterMoving;
-      if (_activeShooterMoving &&
-          (_activeShooterPathIndex < 0 ||
-              _activeShooterPathIndex >= _activeShooterPath.length)) {
-        _activeShooterPathIndex = 1;
-        _activeShooterPathDirection = 1;
-      }
-      routeStatus = _activeShooterMoving
-          ? 'Shooter simulation moving'
-          : 'Shooter paused';
-    });
-
-    _movingShooterRerouteElapsed = _movingShooterRerouteInterval;
-    if (_evacuationRouteRole != null) {
-      _updateLiveRoute(_movingShooterRerouteInterval);
-    }
-  }
-
-  void _resetActiveShooterMovement() {
-    final id = _activeShooterActorId;
-    if (id == null || _activeShooterPath.isEmpty) return;
-
-    final start = _activeShooterPath.first;
-    navigator.moveHazard(id, start[0], start[1]);
-
-    setState(() {
-      _activeShooterMoving = false;
-      _activeShooterPathMode = false;
-      _activeShooterPathIndex = _activeShooterPath.length > 1 ? 1 : 0;
-      _activeShooterPathDirection = 1;
-      routeStatus = 'Shooter reset to path start';
-    });
-
-    if (_evacuationRouteRole != null) {
-      _updateLiveRoute(1.0);
-    }
-  }
-
   void _onActiveShooterTap(TapUpDetails details) {
     if (!_activeShooterPlacementMode || navigator.transition != null) return;
 
@@ -1422,34 +1348,28 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       details.localPosition.dy,
     ]);
 
-    final activeRole = _evacuationRouteRole;
     final zone = navigator.addActiveShooterHazard(
       world[0],
       world[1],
-      radius: _activeShooterRadius,
+      radius: _activeThreatRadius,
     );
 
     setState(() {
       _selectedActiveShooterHazardId = zone.id;
       _activeShooterActorId = zone.id;
-      _activeShooterRadius = zone.radius;
       _activeShooterPlacementMode = false;
-      _activeShooterPathMode = false;
+
+      // Active Shooter is represented as a manually reported restricted area.
+      // It is intentionally not a live-tracked/moving shooter simulation.
       _activeShooterMoving = false;
-      _activeShooterPath = <List<double>>[
-        <double>[zone.x, zone.y],
-      ];
-      _activeShooterPathIndex = 1;
-      _activeShooterPathDirection = 1;
+      _activeShooterPath = const <List<double>>[];
+
       routeSelectionMode = false;
-      routeStatus = 'Shooter placed · set a movement path';
+      routeStatus =
+          'Active threat area reported · recalculating evacuation route';
     });
 
-    if (activeRole != null) {
-      _startRecommendedEvacuationRoute(
-        alternative: activeRole == 'alternative',
-      );
-    }
+    _rerouteAfterHazardChange();
   }
 
   void _onJoystickStart(DragStartDetails details) {

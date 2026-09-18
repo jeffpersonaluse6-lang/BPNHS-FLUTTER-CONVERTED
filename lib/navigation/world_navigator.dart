@@ -129,6 +129,20 @@ class WorldNavigator {
     return zone;
   }
 
+  HazardZone addEarthquakeHazard(double x, double y, {double radius = 55}) {
+    final zone = HazardZone(
+      id: 'earthquake_${_nextHazardId++}',
+      kind: HazardKind.earthquake,
+      x: x,
+      y: y,
+      radius: radius,
+      buildingId: parent?.id,
+      floor: parent == null ? 1 : currentFloor,
+    );
+    hazards.add(zone);
+    return zone;
+  }
+
   /// Adds a manually reported unsafe/restricted area for
   /// active-shooter simulation. This does not track a person.
   HazardZone addActiveShooterHazard(double x, double y, {double radius = 70}) {
@@ -150,6 +164,12 @@ class WorldNavigator {
       if (hazard.id == id) return hazard;
     }
     return null;
+  }
+
+  bool removeHazard(String id) {
+    final before = hazards.length;
+    hazards.removeWhere((hazard) => hazard.id == id);
+    return hazards.length != before;
   }
 
   bool moveHazard(String id, double x, double y) {
@@ -524,11 +544,12 @@ class WorldNavigator {
 
     final riskZones = <RouteRiskZone>[
       for (final hazard in floorHazards)
-        RouteRiskZone(
-          x: hazard.x,
-          y: hazard.y,
-          radius: hazard.radius + hazardSafetyClearance,
-        ),
+        if (hazard.kind != HazardKind.earthquake)
+          RouteRiskZone(
+            x: hazard.x,
+            y: hazard.y,
+            radius: hazard.radius + hazardSafetyClearance,
+          ),
     ];
 
     final route = SameFloorPathfinder(
@@ -680,9 +701,19 @@ class WorldNavigator {
       currentFloor,
       section.target,
     );
-    if (guide == null) return null;
 
-    return '${guide.id}:${section.id}:$currentFloor:${section.target}';
+    if (guide != null) {
+      return '${guide.id}:${section.id}:$currentFloor:${section.target}';
+    }
+
+    // Not every building has a hand-authored waypoint guide. In that case,
+    // use the staircase's real generated lane as a waypoint guide instead.
+    // This makes waypoint following work in every building while preserving
+    // custom authored guides where they exist.
+    final laneRoutes = _stairLaneRoutes(building, section);
+    if (laneRoutes.isEmpty || laneRoutes.first.length < 2) return null;
+
+    return 'auto:${building.id}:${section.id}:$currentFloor:${section.target}';
   }
 
   List<List<double>> authoredWaypointGuideForSection(StairSection section) {
@@ -695,14 +726,28 @@ class WorldNavigator {
       currentFloor,
       section.target,
     );
-    if (guide == null) return const <List<double>>[];
 
-    return _routeWaypointWorldPoints(
-      building,
-      guide,
-      currentFloor,
-      section.target,
-    );
+    if (guide != null) {
+      return _routeWaypointWorldPoints(
+        building,
+        guide,
+        currentFloor,
+        section.target,
+      );
+    }
+
+    // Generic fallback for buildings without a custom waypoint definition.
+    // _stairLaneRoutes() is built from the actual staircase geometry for the
+    // current building, so it remains aligned even when building size,
+    // rotation, mirroring, or floor transform differs.
+    final laneRoutes = _stairLaneRoutes(building, section);
+    if (laneRoutes.isEmpty || laneRoutes.first.length < 2) {
+      return const <List<double>>[];
+    }
+
+    return <List<double>>[
+      for (final point in laneRoutes.first) <double>[point[0], point[1]],
+    ];
   }
 
   List<List<double>> _remainingAuthoredWaypointGuide(
