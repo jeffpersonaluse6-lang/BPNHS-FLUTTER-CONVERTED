@@ -254,24 +254,25 @@ void main() {
   });
 
   group('RouteStepBuilder distance formatting', () {
-    test('formats short distance as a few steps', () {
+    test('straight walk has no distance detail', () {
       final step = build(
         'Route ready',
         route: const [[0, 0], [10, 0]],
         pos: const [0, 0],
       );
       expect(step, isNotNull);
-      expect(step!.detail, 'a few steps');
+      expect(step!.detail, isNull);
     });
 
-    test('formats medium distance', () {
+    test('turn instruction has no distance detail', () {
       final step = build(
         'Route ready',
-        route: const [[0, 0], [200, 0]],
+        route: const [[0, 0], [200, 0], [200, 100]],
         pos: const [0, 0],
       );
       expect(step, isNotNull);
-      expect(step!.detail, 'about 20 meters');
+      expect(step!.instruction, contains('right'));
+      expect(step.detail, isNotNull);
     });
   });
 

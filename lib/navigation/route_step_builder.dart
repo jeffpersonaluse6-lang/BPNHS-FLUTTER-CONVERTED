@@ -273,7 +273,6 @@ class RouteStepBuilder {
     );
 
     if (turnInfo == null) {
-      final distance = _totalRouteDistance(routePoints);
       final gateLabel = evacuationGateKind == 'secondary_gate'
           ? 'Secondary Gate'
           : evacuationGateKind == 'main_gate'
@@ -283,26 +282,20 @@ class RouteStepBuilder {
       if (gateLabel != null) {
         return RouteStep(
           instruction: 'Walk toward $gateLabel',
-          detail: _formatDistance(distance),
           icon: 'straight',
         );
       }
 
-      return RouteStep(
+      return const RouteStep(
         instruction: 'Walk straight',
-        detail: _formatDistance(distance),
         icon: 'straight',
       );
     }
 
     final turnName = _turnName(turnInfo.angleChange);
-    final segmentDistance = _segmentDistance(
-      turnInfo.playerSegmentStart,
-      turnInfo.turnPoint,
-    );
 
     return RouteStep(
-      instruction: '$turnName in ${_formatDistance(segmentDistance)}',
+      instruction: turnName,
       detail: _turnDetail(turnInfo.angleChange),
       icon: turnInfo.angleChange > 0 ? 'turn_right' : 'turn_left',
     );
