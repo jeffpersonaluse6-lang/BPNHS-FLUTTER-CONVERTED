@@ -4,7 +4,6 @@ import 'collision.dart';
 
 const double hazardSafetyClearance = 45.0;
 const double hazardComfortClearance = 110.0;
-const double hazardRiskPenaltyWeight = 8.0;
 
 enum HazardKind { fire, earthquake, activeShooter }
 

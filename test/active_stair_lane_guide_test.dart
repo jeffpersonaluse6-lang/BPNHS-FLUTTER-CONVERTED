@@ -58,8 +58,9 @@ void main() {
     // DOWN guidance to the right lane, making the first blue segment cross the
     // center railing.
     final floorPoint = stair.localToWorld(10, 70); // 20% of stair width
-    final worldPoint =
-        navigator.floorTransform(building).project(floorPoint[0], floorPoint[1]);
+    final worldPoint = navigator
+        .floorTransform(building)
+        .project(floorPoint[0], floorPoint[1]);
     navigator.markerX = worldPoint[0];
     navigator.markerY = worldPoint[1];
 
@@ -67,10 +68,10 @@ void main() {
     expect(guide.length, greaterThan(1));
 
     for (final point in guide.skip(1)) {
-      final floorLocal =
-          navigator.floorTransform(building).unproject(point[0], point[1]);
-      final stairLocal =
-          stair.worldToLocal(floorLocal[0], floorLocal[1]);
+      final floorLocal = navigator
+          .floorTransform(building)
+          .unproject(point[0], point[1]);
+      final stairLocal = stair.worldToLocal(floorLocal[0], floorLocal[1]);
 
       expect(
         stairLocal[0] / stair.width,

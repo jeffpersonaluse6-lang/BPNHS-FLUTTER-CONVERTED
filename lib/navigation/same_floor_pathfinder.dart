@@ -112,7 +112,15 @@ class SameFloorPathfinder {
 
         final roadCost = _routeCost(roadRoute);
         final plainCost = _routeCost(plainRoute);
-        return roadCost <= plainCost ? roadRoute : plainRoute;
+
+        // Cost sampling can make a diagonal that merely crosses a road look a
+        // few percent cheaper than a route that deliberately follows its
+        // centerline. Treat that small difference as a tie so road preference
+        // remains stable, while still rejecting genuinely large detours.
+        const roadTieTolerance = 1.05;
+        return roadCost <= plainCost * roadTieTolerance
+            ? roadRoute
+            : plainRoute;
       }
     }
 

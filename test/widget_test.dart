@@ -43,7 +43,7 @@ Future<Map<String, dynamic>> _loadMapJson() async {
           'width': 200,
           'height': 150,
           'floor_count': 2,
-        }
+        },
       ],
       'test_building:Floor 1': [
         {
@@ -53,7 +53,7 @@ Future<Map<String, dynamic>> _loadMapJson() async {
           'y': 10,
           'width': 80,
           'height': 60,
-        }
+        },
       ],
       'test_building:Floor 2': [],
       'test_building:Roof': [],
@@ -141,11 +141,26 @@ void main() {
 
     test('rotation affects projection', () {
       final parent0 = MapItem(
-          kind: 'building', x: 0, y: 0, width: 100, height: 100,
-          floorWidth: 100, floorHeight: 100, id: 'a');
+        kind: 'building',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+        floorWidth: 100,
+        floorHeight: 100,
+        id: 'a',
+      );
       final parent90 = MapItem(
-          kind: 'building', x: 0, y: 0, width: 100, height: 100,
-          floorWidth: 100, floorHeight: 100, rotation: 90, id: 'b');
+        kind: 'building',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+        floorWidth: 100,
+        floorHeight: 100,
+        rotation: 90,
+        id: 'b',
+      );
       final ft0 = FloorTransform.build(parent0);
       final ft90 = FloorTransform.build(parent90);
       final w0 = ft0.project(10, 0);
@@ -323,7 +338,13 @@ void main() {
     });
 
     test('world inverts screen', () {
-      final cam = SmoothCamera(width: 800, height: 600, x: 100, y: 50, scale: 1.5);
+      final cam = SmoothCamera(
+        width: 800,
+        height: 600,
+        x: 100,
+        y: 50,
+        scale: 1.5,
+      );
       final screenPt = cam.screen([200, 300]);
       final worldPt = cam.world(screenPt);
       expect(worldPt[0], closeTo(200, 1e-9));
@@ -342,14 +363,24 @@ void main() {
   group('Collision basics', () {
     test('barrier blocks point inside radius', () {
       final b = Barrier(
-        startX: 0, startY: 0, endX: 100, endY: 0, radius: 5, flat: true,
+        startX: 0,
+        startY: 0,
+        endX: 100,
+        endY: 0,
+        radius: 5,
+        flat: true,
       );
       expect(b.blocks(50, 3, 10), isTrue);
     });
 
     test('barrier does not block point outside radius', () {
       final b = Barrier(
-        startX: 0, startY: 0, endX: 100, endY: 0, radius: 5, flat: true,
+        startX: 0,
+        startY: 0,
+        endX: 100,
+        endY: 0,
+        radius: 5,
+        flat: true,
       );
       expect(b.blocks(50, 20, 10), isFalse);
     });
@@ -433,7 +464,14 @@ void main() {
 
   group('Camera canvas parity', () {
     test('canvas transform matches camera.screen() for multiple positions', () {
-      final cam = SmoothCamera(width: 800, height: 600, x: 100, y: 50, scale: 1.5, rotation: 0.3);
+      final cam = SmoothCamera(
+        width: 800,
+        height: 600,
+        x: 100,
+        y: 50,
+        scale: 1.5,
+        rotation: 0.3,
+      );
       final worldPoints = [
         [0.0, 0.0],
         [100.0, 200.0],
@@ -442,29 +480,60 @@ void main() {
       ];
       for (final wp in worldPoints) {
         final screenPt = cam.screen(wp);
-        final canvasX = cam.x + cam.scale * (math.cos(cam.rotation) * wp[0] - math.sin(cam.rotation) * wp[1]);
-        final canvasY = cam.y + cam.scale * (math.sin(cam.rotation) * wp[0] + math.cos(cam.rotation) * wp[1]);
-        expect(screenPt[0], closeTo(canvasX, 1e-9),
-            reason: 'screen x mismatch for $wp');
-        expect(screenPt[1], closeTo(canvasY, 1e-9),
-            reason: 'screen y mismatch for $wp');
+        final canvasX =
+            cam.x +
+            cam.scale *
+                (math.cos(cam.rotation) * wp[0] -
+                    math.sin(cam.rotation) * wp[1]);
+        final canvasY =
+            cam.y +
+            cam.scale *
+                (math.sin(cam.rotation) * wp[0] +
+                    math.cos(cam.rotation) * wp[1]);
+        expect(
+          screenPt[0],
+          closeTo(canvasX, 1e-9),
+          reason: 'screen x mismatch for $wp',
+        );
+        expect(
+          screenPt[1],
+          closeTo(canvasY, 1e-9),
+          reason: 'screen y mismatch for $wp',
+        );
       }
     });
 
-    test('canvas translate/scale/rotate produces same result as camera.screen()', () {
-      final cam = SmoothCamera(width: 1024, height: 768, x: 200, y: 150, scale: 2.0, rotation: 0.5);
-      final wp = [300.0, 400.0];
-      final expected = cam.screen(wp);
-      final cosR = math.cos(cam.rotation);
-      final sinR = math.sin(cam.rotation);
-      final cx = cam.x + cam.scale * (cosR * wp[0] - sinR * wp[1]);
-      final cy = cam.y + cam.scale * (sinR * wp[0] + cosR * wp[1]);
-      expect(expected[0], closeTo(cx, 1e-9));
-      expect(expected[1], closeTo(cy, 1e-9));
-    });
+    test(
+      'canvas translate/scale/rotate produces same result as camera.screen()',
+      () {
+        final cam = SmoothCamera(
+          width: 1024,
+          height: 768,
+          x: 200,
+          y: 150,
+          scale: 2.0,
+          rotation: 0.5,
+        );
+        final wp = [300.0, 400.0];
+        final expected = cam.screen(wp);
+        final cosR = math.cos(cam.rotation);
+        final sinR = math.sin(cam.rotation);
+        final cx = cam.x + cam.scale * (cosR * wp[0] - sinR * wp[1]);
+        final cy = cam.y + cam.scale * (sinR * wp[0] + cosR * wp[1]);
+        expect(expected[0], closeTo(cx, 1e-9));
+        expect(expected[1], closeTo(cy, 1e-9));
+      },
+    );
 
     test('canvas transform with zero rotation matches scale/translate', () {
-      final cam = SmoothCamera(width: 800, height: 600, x: 50, y: 30, scale: 1.5, rotation: 0);
+      final cam = SmoothCamera(
+        width: 800,
+        height: 600,
+        x: 50,
+        y: 30,
+        scale: 1.5,
+        rotation: 0,
+      );
       final wp = [100.0, 200.0];
       final expected = cam.screen(wp);
       expect(expected[0], closeTo(50 + 1.5 * 100, 1e-9));
@@ -559,9 +628,12 @@ void main() {
 
     test('wallPolygon matches Python wall_polygon formula', () {
       final barrier = Barrier(
-        startX: 100, startY: 200,
-        endX: 300, endY: 200,
-        radius: 5, flat: true,
+        startX: 100,
+        startY: 200,
+        endX: 300,
+        endY: 200,
+        radius: 5,
+        flat: true,
       );
       final polygon = wallPolygon(barrier);
       expect(polygon.length, 4);
@@ -577,9 +649,12 @@ void main() {
 
     test('wallPolygon with angled wall', () {
       final barrier = Barrier(
-        startX: 0, startY: 0,
-        endX: 100, endY: 100,
-        radius: 3, flat: true,
+        startX: 0,
+        startY: 0,
+        endX: 100,
+        endY: 100,
+        radius: 3,
+        flat: true,
       );
       final polygon = wallPolygon(barrier);
       expect(polygon.length, 4);
@@ -599,8 +674,10 @@ void main() {
     test('Python floor_scale matches Flutter _floorScale', () {
       final parent = MapItem(
         kind: 'building',
-        x: 0, y: 0,
-        width: 300, height: 200,
+        x: 0,
+        y: 0,
+        width: 300,
+        height: 200,
         floorWidth: 1436,
         floorHeight: 751,
         id: 'fs1',
@@ -611,49 +688,75 @@ void main() {
       expect(sy, closeTo(200.0 / 751, 1e-9));
     });
 
-    test('Python project() matches Flutter FloorTransform.project() for floor items', () {
-      final parent = MapItem(
-        kind: 'building',
-        x: 100, y: 200,
-        width: 300, height: 200,
-        rotation: 0,
-        id: 'proj1',
-      );
-      final ft = FloorTransform.build(parent);
-      final item = MapItem(
-        kind: 'room',
-        x: 50, y: 30,
-        width: 100, height: 80,
-        id: 'proj_item',
-      );
-      final itemWorld = item.localToWorld(0, 0);
-      final flutterResult = ft.project(itemWorld[0], itemWorld[1]);
-      final sx = 300.0 / 1436;
-      final sy = 200.0 / 751;
-      final pyX = (itemWorld[0] - 0) * sx;
-      final pyY = (itemWorld[1] - 0) * sy;
-      final pyResultX = 100 + pyX;
-      final pyResultY = 200 + pyY;
-      expect(flutterResult[0], closeTo(pyResultX, 1e-9));
-      expect(flutterResult[1], closeTo(pyResultY, 1e-9));
-    });
+    test(
+      'Python project() matches Flutter FloorTransform.project() for floor items',
+      () {
+        final parent = MapItem(
+          kind: 'building',
+          x: 100,
+          y: 200,
+          width: 300,
+          height: 200,
+          rotation: 0,
+          id: 'proj1',
+        );
+        final ft = FloorTransform.build(parent);
+        final item = MapItem(
+          kind: 'room',
+          x: 50,
+          y: 30,
+          width: 100,
+          height: 80,
+          id: 'proj_item',
+        );
+        final itemWorld = item.localToWorld(0, 0);
+        final flutterResult = ft.project(itemWorld[0], itemWorld[1]);
+        final sx = 300.0 / 1436;
+        final sy = 200.0 / 751;
+        final pyX = (itemWorld[0] - 0) * sx;
+        final pyY = (itemWorld[1] - 0) * sy;
+        final pyResultX = 100 + pyX;
+        final pyResultY = 200 + pyY;
+        expect(flutterResult[0], closeTo(pyResultX, 1e-9));
+        expect(flutterResult[1], closeTo(pyResultY, 1e-9));
+      },
+    );
   });
 
   group('Player position parity', () {
-    test('camera.screen(playerWorld) matches rendered player position formula', () {
-      final cam = SmoothCamera(width: 800, height: 600, x: 100, y: 50, scale: 1.5, rotation: 0.3);
-      final playerWorld = [1510.0, 620.0];
-      final screenPt = cam.screen(playerWorld);
-      final cosR = math.cos(cam.rotation);
-      final sinR = math.sin(cam.rotation);
-      final expectedX = cam.x + cam.scale * (cosR * playerWorld[0] - sinR * playerWorld[1]);
-      final expectedY = cam.y + cam.scale * (sinR * playerWorld[0] + cosR * playerWorld[1]);
-      expect(screenPt[0], closeTo(expectedX, 1e-9));
-      expect(screenPt[1], closeTo(expectedY, 1e-9));
-    });
+    test(
+      'camera.screen(playerWorld) matches rendered player position formula',
+      () {
+        final cam = SmoothCamera(
+          width: 800,
+          height: 600,
+          x: 100,
+          y: 50,
+          scale: 1.5,
+          rotation: 0.3,
+        );
+        final playerWorld = [1510.0, 620.0];
+        final screenPt = cam.screen(playerWorld);
+        final cosR = math.cos(cam.rotation);
+        final sinR = math.sin(cam.rotation);
+        final expectedX =
+            cam.x + cam.scale * (cosR * playerWorld[0] - sinR * playerWorld[1]);
+        final expectedY =
+            cam.y + cam.scale * (sinR * playerWorld[0] + cosR * playerWorld[1]);
+        expect(screenPt[0], closeTo(expectedX, 1e-9));
+        expect(screenPt[1], closeTo(expectedY, 1e-9));
+      },
+    );
 
     test('player screen position is not always screen center', () {
-      final cam = SmoothCamera(width: 800, height: 600, x: 0, y: 0, scale: 1, rotation: 0);
+      final cam = SmoothCamera(
+        width: 800,
+        height: 600,
+        x: 0,
+        y: 0,
+        scale: 1,
+        rotation: 0,
+      );
       final playerWorld = [300.0, 400.0];
       final screenPt = cam.screen(playerWorld);
       expect(screenPt[0], closeTo(300, 1e-9));
@@ -699,7 +802,10 @@ void main() {
       final nav = WorldNavigator(scene);
       final building = scene.buildings().first;
       nav.enterBuilding(building);
-      expect(nav.roofOpacity(building, nav.markerX, nav.markerY), closeTo(0.0, 1e-9));
+      expect(
+        nav.roofOpacity(building, nav.markerX, nav.markerY),
+        closeTo(0.0, 1e-9),
+      );
       nav.exitBuilding();
       final result = nav.roofOpacity(building, 0, 0);
       expect(result, closeTo(1.0, 1e-9));
@@ -744,7 +850,11 @@ void main() {
       final scene = MapScene.fromJson(_buildTestScene());
       final nav = WorldNavigator(scene);
       final building = scene.buildings().first;
-      final result = nav.inside(building, building.x + building.width / 2, building.y + building.height / 2);
+      final result = nav.inside(
+        building,
+        building.x + building.width / 2,
+        building.y + building.height / 2,
+      );
       expect(result, isTrue);
     });
 
@@ -760,7 +870,11 @@ void main() {
       final scene = MapScene.fromJson(_buildTestScene());
       final nav = WorldNavigator(scene);
       final building = scene.buildings().first;
-      final dist = nav.distanceToParent(building, building.x + building.width / 2, building.y + building.height / 2);
+      final dist = nav.distanceToParent(
+        building,
+        building.x + building.width / 2,
+        building.y + building.height / 2,
+      );
       expect(dist, closeTo(0.0, 1e-9));
     });
 
@@ -781,7 +895,10 @@ void main() {
       final scene = MapScene.fromJson(json);
       final nav = WorldNavigator(scene);
       final building = scene.buildings().first;
-      final center = building.localToWorld(building.width / 2, building.height / 2);
+      final center = building.localToWorld(
+        building.width / 2,
+        building.height / 2,
+      );
       expect(nav.inside(building, center[0], center[1]), isTrue);
     });
 
@@ -792,7 +909,10 @@ void main() {
       final scene = MapScene.fromJson(json);
       final nav = WorldNavigator(scene);
       final building = scene.buildings().first;
-      final center = building.localToWorld(building.width / 2, building.height / 2);
+      final center = building.localToWorld(
+        building.width / 2,
+        building.height / 2,
+      );
       final dist = nav.distanceToParent(building, center[0], center[1]);
       expect(dist, closeTo(0.0, 1e-9));
     });
@@ -843,8 +963,10 @@ void main() {
       final camY = 50.0;
       final camScale = 1.5;
       final playerWorld = [500.0, 300.0];
-      final sx = camX + camScale * (cosR * playerWorld[0] - sinR * playerWorld[1]);
-      final sy = camY + camScale * (sinR * playerWorld[0] + cosR * playerWorld[1]);
+      final sx =
+          camX + camScale * (cosR * playerWorld[0] - sinR * playerWorld[1]);
+      final sy =
+          camY + camScale * (sinR * playerWorld[0] + cosR * playerWorld[1]);
       expect(sx, closeTo(850.0, 1e-9));
       expect(sy, closeTo(500.0, 1e-9));
     });
@@ -874,7 +996,8 @@ void main() {
     test('player is blocked when doorway narrower than diameter', () {
       final json = _minimalScene();
       final campus = json['floors']['Campus'] as List;
-      final opening = campus.firstWhere((i) => i['id'] == 'door1') as Map<String, dynamic>;
+      final opening =
+          campus.firstWhere((i) => i['id'] == 'door1') as Map<String, dynamic>;
       opening['width'] = 5;
       final scene = MapScene.fromJson(json);
       final nav = WorldNavigator(scene, collisionRadius: 10);
@@ -891,12 +1014,23 @@ void main() {
     test('only relevant openings cut a wall', () {
       final items = [
         MapItem.fromJson({
-          'kind': 'wall', 'id': 'w1', 'x': 100, 'y': 100,
-          'width': 200, 'height': 0, 'stroke': 4, 'blocking': true,
+          'kind': 'wall',
+          'id': 'w1',
+          'x': 100,
+          'y': 100,
+          'width': 200,
+          'height': 0,
+          'stroke': 4,
+          'blocking': true,
         }),
         MapItem.fromJson({
-          'kind': 'door', 'id': 'd1', 'x': 190, 'y': 96,
-          'width': 20, 'height': 8, 'blocking': false,
+          'kind': 'door',
+          'id': 'd1',
+          'x': 190,
+          'y': 96,
+          'width': 20,
+          'height': 8,
+          'blocking': false,
         }),
       ];
       final index = OpeningIndex(items);
@@ -909,21 +1043,44 @@ void main() {
     test('unrelated door does not remove another wall', () {
       final items = [
         MapItem.fromJson({
-          'kind': 'wall', 'id': 'w1', 'x': 100, 'y': 100,
-          'width': 200, 'height': 0, 'stroke': 4, 'blocking': true,
+          'kind': 'wall',
+          'id': 'w1',
+          'x': 100,
+          'y': 100,
+          'width': 200,
+          'height': 0,
+          'stroke': 4,
+          'blocking': true,
         }),
         MapItem.fromJson({
-          'kind': 'wall', 'id': 'w2', 'x': 500, 'y': 500,
-          'width': 100, 'height': 0, 'stroke': 4, 'blocking': true,
+          'kind': 'wall',
+          'id': 'w2',
+          'x': 500,
+          'y': 500,
+          'width': 100,
+          'height': 0,
+          'stroke': 4,
+          'blocking': true,
         }),
         MapItem.fromJson({
-          'kind': 'door', 'id': 'd1', 'x': 190, 'y': 96,
-          'width': 20, 'height': 8, 'blocking': false,
+          'kind': 'door',
+          'id': 'd1',
+          'x': 190,
+          'y': 96,
+          'width': 20,
+          'height': 8,
+          'blocking': false,
         }),
       ];
       final index = OpeningIndex(items);
-      final w1Sections = wallSections(items[0], openings: index.forWall(items[0]));
-      final w2Sections = wallSections(items[1], openings: index.forWall(items[1]));
+      final w1Sections = wallSections(
+        items[0],
+        openings: index.forWall(items[0]),
+      );
+      final w2Sections = wallSections(
+        items[1],
+        openings: index.forWall(items[1]),
+      );
       expect(w1Sections.length, 2);
       expect(w2Sections.length, 1);
       final w2TotalLength = w2Sections.fold(0.0, (sum, s) {
@@ -937,16 +1094,30 @@ void main() {
     test('door far from wall does not produce a gap', () {
       final items = [
         MapItem.fromJson({
-          'kind': 'wall', 'id': 'w1', 'x': 100, 'y': 100,
-          'width': 200, 'height': 0, 'stroke': 4, 'blocking': true,
+          'kind': 'wall',
+          'id': 'w1',
+          'x': 100,
+          'y': 100,
+          'width': 200,
+          'height': 0,
+          'stroke': 4,
+          'blocking': true,
         }),
         MapItem.fromJson({
-          'kind': 'door', 'id': 'd1', 'x': 100, 'y': 500,
-          'width': 20, 'height': 8, 'blocking': false,
+          'kind': 'door',
+          'id': 'd1',
+          'x': 100,
+          'y': 500,
+          'width': 20,
+          'height': 8,
+          'blocking': false,
         }),
       ];
       final index = OpeningIndex(items);
-      final sections = wallSections(items[0], openings: index.forWall(items[0]));
+      final sections = wallSections(
+        items[0],
+        openings: index.forWall(items[0]),
+      );
       final totalLength = sections.fold(0.0, (sum, s) {
         final dx = s.endX - s.startX;
         final dy = s.endY - s.startY;
@@ -959,9 +1130,15 @@ void main() {
   group('Circle wall outer/inner radii match Python', () {
     test('circle wall outer and inner radii', () {
       final item = MapItem.fromJson({
-        'kind': 'circle_wall', 'id': 'cw1',
-        'x': 100, 'y': 100, 'width': 60, 'height': 60,
-        'stroke': 6, 'color': '#111111', 'blocking': true,
+        'kind': 'circle_wall',
+        'id': 'cw1',
+        'x': 100,
+        'y': 100,
+        'width': 60,
+        'height': 60,
+        'stroke': 6,
+        'color': '#111111',
+        'blocking': true,
       });
       final radius = item.stroke / 2;
       final outerW = item.width + 2 * radius;
@@ -976,9 +1153,15 @@ void main() {
 
     test('circle wall opening remains in correct angular position', () {
       final item = MapItem.fromJson({
-        'kind': 'circle_wall', 'id': 'cw2',
-        'x': 100, 'y': 100, 'width': 60, 'height': 60,
-        'stroke': 6, 'color': '#111111', 'blocking': true,
+        'kind': 'circle_wall',
+        'id': 'cw2',
+        'x': 100,
+        'y': 100,
+        'width': 60,
+        'height': 60,
+        'stroke': 6,
+        'color': '#111111',
+        'blocking': true,
         'circle_openings': [
           {'angle': 0, 'width': 15, 'id': 'co1'},
         ],
@@ -987,12 +1170,19 @@ void main() {
       final totalArc = arcs.fold(0.0, (sum, a) => sum + (a.$2 - a.$1));
       expect(totalArc, lessThan(2 * math.pi));
       final openings = MapItem.fromJson({
-        'kind': 'opening', 'id': 'o1',
-        'x': 100 + 30, 'y': 96, 'width': 15, 'height': 8,
+        'kind': 'opening',
+        'id': 'o1',
+        'x': 100 + 30,
+        'y': 96,
+        'width': 15,
+        'height': 8,
         'blocking': false,
       });
       final arcsWithOpening = solidArcs(item, openings: [openings]);
-      final totalWithOpening = arcsWithOpening.fold(0.0, (sum, a) => sum + (a.$2 - a.$1));
+      final totalWithOpening = arcsWithOpening.fold(
+        0.0,
+        (sum, a) => sum + (a.$2 - a.$1),
+      );
       expect(totalWithOpening, closeTo(totalArc, 0.01));
     });
   });
@@ -1000,9 +1190,15 @@ void main() {
   group('Gazebo roof dimensions', () {
     test('gazebo roof has 8 radial sections', () {
       final item = MapItem.fromJson({
-        'kind': 'gazebo_roof', 'id': 'gr1',
-        'x': 100, 'y': 100, 'width': 80, 'height': 80,
-        'fill': '#DDDDDD', 'color': '#111111', 'stroke': 2,
+        'kind': 'gazebo_roof',
+        'id': 'gr1',
+        'x': 100,
+        'y': 100,
+        'width': 80,
+        'height': 80,
+        'fill': '#DDDDDD',
+        'color': '#111111',
+        'stroke': 2,
       });
       expect(item.width, 80);
       expect(item.height, 80);
@@ -1010,9 +1206,15 @@ void main() {
 
     test('inner ring is 92% of full size', () {
       final item = MapItem.fromJson({
-        'kind': 'gazebo_roof', 'id': 'gr2',
-        'x': 100, 'y': 100, 'width': 80, 'height': 80,
-        'fill': '#DDDDDD', 'color': '#111111', 'stroke': 2,
+        'kind': 'gazebo_roof',
+        'id': 'gr2',
+        'x': 100,
+        'y': 100,
+        'width': 80,
+        'height': 80,
+        'fill': '#DDDDDD',
+        'color': '#111111',
+        'stroke': 2,
       });
       final innerW = item.width * 0.92;
       final innerH = item.height * 0.92;
@@ -1022,9 +1224,15 @@ void main() {
 
     test('center dot is 8% of full size', () {
       final item = MapItem.fromJson({
-        'kind': 'gazebo_roof', 'id': 'gr3',
-        'x': 100, 'y': 100, 'width': 80, 'height': 80,
-        'fill': '#DDDDDD', 'color': '#111111', 'stroke': 2,
+        'kind': 'gazebo_roof',
+        'id': 'gr3',
+        'x': 100,
+        'y': 100,
+        'width': 80,
+        'height': 80,
+        'fill': '#DDDDDD',
+        'color': '#111111',
+        'stroke': 2,
       });
       final dotW = item.width * 0.08;
       final dotH = item.height * 0.08;
@@ -1036,12 +1244,21 @@ void main() {
   group('Court roof primitives', () {
     test('court roof fill and rib count', () {
       final item = MapItem.fromJson({
-        'kind': 'court_roof', 'id': 'cr1',
-        'x': 100, 'y': 100, 'width': 200, 'height': 100,
-        'fill': '#CCCCCC', 'color': '#111111', 'stroke': 2,
+        'kind': 'court_roof',
+        'id': 'cr1',
+        'x': 100,
+        'y': 100,
+        'width': 200,
+        'height': 100,
+        'fill': '#CCCCCC',
+        'color': '#111111',
+        'stroke': 2,
       });
       final horizontal = item.width >= item.height;
-      final count = math.max(4, math.min(80, (horizontal ? item.width : item.height) / 48).ceil());
+      final count = math.max(
+        4,
+        math.min(80, (horizontal ? item.width : item.height) / 48).ceil(),
+      );
       expect(horizontal, isTrue);
       expect(count, greaterThanOrEqualTo(4));
       expect(count, lessThanOrEqualTo(80));
@@ -1085,7 +1302,9 @@ void main() {
       final json = _minimalSceneWithRoofs();
       final scene = MapScene.fromJson(json);
       final campus = scene.floors['Campus'] ?? [];
-      final roofItems = campus.where((i) => roofKinds.contains(i.kind)).toList();
+      final roofItems = campus
+          .where((i) => roofKinds.contains(i.kind))
+          .toList();
       expect(roofItems.length, greaterThanOrEqualTo(2));
     });
   });

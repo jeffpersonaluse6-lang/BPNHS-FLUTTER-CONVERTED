@@ -6,9 +6,9 @@ void main() {
     const guide = StairWaypointGuide(
       id: 'g',
       buildingId: 'b',
-      sourceFloor: 1,
-      targetFloor: 2,
-      points: <List<double>>[
+      floorA: 1,
+      floorB: 2,
+      pointsAtoB: <List<double>>[
         <double>[10, 10],
         <double>[20, 40],
         <double>[55, 40],
@@ -34,8 +34,8 @@ void main() {
   test('editor-generated waypoint data exists', () {
     expect(stairWaypointGuides, isNotEmpty);
     for (final guide in stairWaypointGuides) {
-      expect(guide.points.length, greaterThanOrEqualTo(2));
-      expect(guide.sourceFloor, isNot(guide.targetFloor));
+      expect(guide.pointsAtoB.length, greaterThanOrEqualTo(2));
+      expect(guide.floorA, isNot(guide.floorB));
     }
   });
 }

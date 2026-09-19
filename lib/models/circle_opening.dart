@@ -18,9 +18,5 @@ class CircleOpening {
     );
   }
 
-  Map<String, dynamic> toJson() => {
-        'angle': angle,
-        'width': width,
-        'id': id,
-      };
+  Map<String, dynamic> toJson() => {'angle': angle, 'width': width, 'id': id};
 }

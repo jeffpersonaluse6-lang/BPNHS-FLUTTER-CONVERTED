@@ -150,4 +150,24 @@ void main() {
     expect(near, greaterThan(0));
     expect(far, greaterThanOrEqualTo(0));
   });
+
+  test('earthquake blockage ignores fire safety expansion', () {
+    final blockage = HazardZone(
+      id: 'earthquake_1',
+      kind: HazardKind.earthquake,
+      x: 100,
+      y: 100,
+      radius: 55,
+      buildingId: null,
+      floor: 1,
+    );
+
+    final barrier = blockage
+        .routingBarriers(safetyMargin: hazardSafetyClearance)
+        .single;
+
+    expect(barrier.radius, 55);
+    expect(barrier.blocks(154, 100, 0), isTrue);
+    expect(barrier.blocks(156, 100, 0), isFalse);
+  });
 }

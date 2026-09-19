@@ -5,13 +5,7 @@ import 'package:flutter_runtime/navigation/collision.dart';
 import 'package:flutter_runtime/navigation/same_floor_pathfinder.dart';
 import 'package:flutter_runtime/navigation/world_navigator.dart';
 
-Barrier wall(
-  double x1,
-  double y1,
-  double x2,
-  double y2, {
-  double radius = 2,
-}) {
+Barrier wall(double x1, double y1, double x2, double y2, {double radius = 2}) {
   return Barrier(
     startX: x1,
     startY: y1,
@@ -51,18 +45,12 @@ void main() {
 
       expect(route, isNotEmpty);
       expect(route.length, greaterThan(2));
-      expect(
-        route.any((p) => p[1] < 30 || p[1] > 170),
-        isTrue,
-      );
+      expect(route.any((p) => p[1] < 30 || p[1] > 170), isTrue);
     });
 
     test('uses a doorway gap instead of crossing wall segments', () {
       final pathfinder = SameFloorPathfinder(
-        barriers: [
-          wall(100, 0, 100, 80),
-          wall(100, 120, 100, 200),
-        ],
+        barriers: [wall(100, 0, 100, 80), wall(100, 120, 100, 200)],
         playerRadius: 5,
         width: 200,
         height: 200,
@@ -76,10 +64,7 @@ void main() {
 
     test('every returned segment is collision-free', () {
       final pathfinder = SameFloorPathfinder(
-        barriers: [
-          wall(90, 30, 90, 150),
-          wall(90, 150, 150, 150),
-        ],
+        barriers: [wall(90, 30, 90, 150), wall(90, 150, 150, 150)],
         playerRadius: 5,
         width: 220,
         height: 220,

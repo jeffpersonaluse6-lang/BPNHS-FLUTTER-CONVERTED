@@ -34,8 +34,10 @@ class BoundsIndex {
     ];
   }
 
-  List<int> query((double, double, double, double) box,
-      {List<double> padding = const [0, 0]}) {
+  List<int> query(
+    (double, double, double, double) box, {
+    List<double> padding = const [0, 0],
+  }) {
     final expanded = (
       box.$1 - padding[0],
       box.$2 - padding[1],

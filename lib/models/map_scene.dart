@@ -43,7 +43,10 @@ class MapScene {
   }
 
   /// Load from an asset bundle.
-  static Future<MapScene> loadFromAssets(AssetBundle bundle, String path) async {
+  static Future<MapScene> loadFromAssets(
+    AssetBundle bundle,
+    String path,
+  ) async {
     final json = await bundle.loadString(path);
     final data = jsonDecode(json) as Map<String, dynamic>;
     return MapScene.fromJson(data);

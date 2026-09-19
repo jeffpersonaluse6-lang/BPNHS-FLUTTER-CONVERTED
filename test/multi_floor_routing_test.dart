@@ -19,12 +19,7 @@ MapItem makeBuilding({int floors = 3}) {
   );
 }
 
-MapItem downStair(
-  String id,
-  int from,
-  int to, {
-  double x = 220,
-}) {
+MapItem downStair(String id, int from, int to, {double x = 220}) {
   return MapItem(
     kind: 'stairs',
     x: x,
@@ -73,13 +68,11 @@ void main() {
       expect(leg.path.first[0], closeTo(60, 1e-9));
       expect(leg.path.first[1], closeTo(100, 1e-9));
 
-      // A DOWN stair should target the right-hand stair flight, matching the
-      // direction indicator shown in the runtime.
-      final floorLocal =
-          navigator.floorTransform(b).unproject(
-                leg.entryPoint[0],
-                leg.entryPoint[1],
-              );
+      // Adjacent source floors alternate stair lanes. Floor 3 uses the
+      // left-hand flight while direction controls longitudinal travel.
+      final floorLocal = navigator
+          .floorTransform(b)
+          .unproject(leg.entryPoint[0], leg.entryPoint[1]);
       final progress = sectionProgress(
         leg.section,
         floorLocal[0],
@@ -87,9 +80,11 @@ void main() {
       );
       expect(progress.$3, greaterThanOrEqualTo(0.94));
 
-      final localEntry =
-          leg.section.stair.worldToLocal(floorLocal[0], floorLocal[1]);
-      expect(localEntry[0], greaterThan(leg.section.width / 2));
+      final localEntry = leg.section.stair.worldToLocal(
+        floorLocal[0],
+        floorLocal[1],
+      );
+      expect(localEntry[0], lessThan(leg.section.width / 2));
     });
 
     test('after arriving on Floor 2 the next leg targets Floor 1', () {

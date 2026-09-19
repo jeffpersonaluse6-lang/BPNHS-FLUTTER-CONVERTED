@@ -23,6 +23,8 @@ class MapPainter extends CustomPainter {
   final double collisionRadius;
   final List<List<double>> routePoints;
   final double routeRevealProgress;
+  final int hazardStateHash;
+  final int surfaceStateHash;
 
   MapPainter({
     required this.scene,
@@ -36,7 +38,26 @@ class MapPainter extends CustomPainter {
     this.collisionRadius = 10,
     this.routePoints = const [],
     this.routeRevealProgress = 1,
-  });
+  }) : hazardStateHash = Object.hashAll([
+         for (final hazard in navigator.hazards)
+           Object.hash(
+             hazard.id,
+             hazard.kind,
+             hazard.x,
+             hazard.y,
+             hazard.radius,
+             hazard.buildingId,
+             hazard.floor,
+           ),
+       ]),
+       surfaceStateHash = Object.hash(
+         navigator.parent?.id,
+         navigator.currentFloor,
+         navigator.view,
+         navigator.transition?.source,
+         navigator.transition?.target,
+         navigator.transition?.progress,
+       );
 
   FloorTransform? _ft;
   double _scale = 1;
@@ -1227,6 +1248,9 @@ class MapPainter extends CustomPainter {
         oldDelegate.playerCenter[1] != playerCenter[1] ||
         oldDelegate.playerSize != playerSize ||
         oldDelegate.collisionRadius != collisionRadius ||
+        oldDelegate.hazardStateHash != hazardStateHash ||
+        oldDelegate.surfaceStateHash != surfaceStateHash ||
+        oldDelegate.routeRevealProgress != routeRevealProgress ||
         !identical(oldDelegate.routePoints, routePoints);
   }
 }

@@ -115,7 +115,7 @@ class WorldNavigator {
     _buildIndex();
   }
 
-  HazardZone addFireHazard(double x, double y, {double radius = 55}) {
+  HazardZone addFireHazard(double x, double y, {double radius = 40}) {
     final zone = HazardZone(
       id: 'fire_${_nextHazardId++}',
       kind: HazardKind.fire,
@@ -183,15 +183,6 @@ class WorldNavigator {
 
   void clearHazards() {
     hazards.clear();
-  }
-
-  bool resizeHazard(String id, double radius) {
-    for (final hazard in hazards) {
-      if (hazard.id != id) continue;
-      hazard.radius = radius.clamp(20.0, 160.0).toDouble();
-      return true;
-    }
-    return false;
   }
 
   List<HazardZone> get visibleHazards {

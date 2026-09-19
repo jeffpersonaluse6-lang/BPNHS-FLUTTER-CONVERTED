@@ -51,8 +51,13 @@ class SmoothCamera {
         sx[1] <= height - margin;
   }
 
-  bool follow(List<double> point, double dt,
-      {bool moving = false, double diameter = 20, bool? guard}) {
+  bool follow(
+    List<double> point,
+    double dt, {
+    bool moving = false,
+    double diameter = 20,
+    bool? guard,
+  }) {
     if (dt <= 0) return false;
     final sx = screen(point);
     final ex = width / 2 - sx[0];
@@ -68,8 +73,9 @@ class SmoothCamera {
     var rate = moving ? 5.0 : 7.0;
     if (useGuard) {
       final urgency = math.max(
-          ex.abs() / math.max(1, limitsX),
-          ey.abs() / math.max(1, limitsY));
+        ex.abs() / math.max(1, limitsX),
+        ey.abs() / math.max(1, limitsY),
+      );
       rate += 12 * math.pow(math.max(0.0, urgency - 0.65), 2).toDouble();
     }
 
@@ -79,9 +85,11 @@ class SmoothCamera {
 
     if (useGuard) {
       final psx = screen(point);
-      x += math.max(-limitsX, math.min(limitsX, psx[0] - width / 2)) -
+      x +=
+          math.max(-limitsX, math.min(limitsX, psx[0] - width / 2)) -
           (psx[0] - width / 2);
-      y += math.max(-limitsY, math.min(limitsY, psx[1] - height / 2)) -
+      y +=
+          math.max(-limitsY, math.min(limitsY, psx[1] - height / 2)) -
           (psx[1] - height / 2);
     }
 

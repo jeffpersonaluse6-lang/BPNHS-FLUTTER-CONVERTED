@@ -6,12 +6,19 @@ class RuntimeIndex<T> {
   final List<T> items;
   final BoundsIndex index;
 
-  RuntimeIndex(this.items, List<(double, double, double, double)> boxes,
-      {int cellSize = 256})
-      : index = BoundsIndex(boxes, cellSize: cellSize);
+  RuntimeIndex(
+    this.items,
+    List<(double, double, double, double)> boxes, {
+    int cellSize = 256,
+  }) : index = BoundsIndex(boxes, cellSize: cellSize);
 
-  List<T> query(double px, double py,
-      {double padding = 0, double? px2, double? py2}) {
+  List<T> query(
+    double px,
+    double py, {
+    double padding = 0,
+    double? px2,
+    double? py2,
+  }) {
     final minX = math.min(px, px2 ?? px);
     final minY = math.min(py, py2 ?? py);
     final maxX = math.max(px, px2 ?? px);

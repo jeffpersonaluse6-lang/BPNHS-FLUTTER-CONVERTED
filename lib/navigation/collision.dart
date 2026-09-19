@@ -32,25 +32,28 @@ class Barrier {
         return along > 0 && along < length && across < radius;
       }
       return helper.hypot(
-              math.max(0.0, math.max(-along, along - length)),
-              math.max(0.0, across - radius)) <
+            math.max(0.0, math.max(-along, along - length)),
+            math.max(0.0, across - radius),
+          ) <
           playerRadius - 1e-7;
     }
 
     final t = length2 > 0
-        ? math.max(0.0,
-            math.min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
+        ? math.max(
+            0.0,
+            math.min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2),
+          )
         : 0.0;
     return helper.hypot(px - ax - t * dx, py - ay - t * dy) <
         radius + playerRadius - 1e-7;
   }
 
   (double, double, double, double) get bounds => (
-        math.min(startX, endX) - radius,
-        math.min(startY, endY) - radius,
-        math.max(startX, endX) + radius,
-        math.max(startY, endY) + radius,
-      );
+    math.min(startX, endX) - radius,
+    math.min(startY, endY) - radius,
+    math.max(startX, endX) + radius,
+    math.max(startY, endY) + radius,
+  );
 }
 
 /// PolygonBarrier — matches Python PolygonBarrier from collision.py.
@@ -95,34 +98,38 @@ class PolygonBarrier {
       final dy = by - ay;
       final length2 = dx * dx + dy * dy;
       final t = length2 > 0
-          ? math.max(0.0,
-              math.min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
+          ? math.max(
+              0.0,
+              math.min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2),
+            )
           : 0.0;
-    if (helper.hypot(px - ax - t * dx, py - ay - t * dy) <
-        playerRadius - 1e-7) {
-      return true;
-    }
-    prev = current;
+      if (helper.hypot(px - ax - t * dx, py - ay - t * dy) <
+          playerRadius - 1e-7) {
+        return true;
+      }
+      prev = current;
     }
     return inside;
   }
 
-  (double, double, double, double) get box => (
-        boundsRect[0].$1,
-        boundsRect[1].$1,
-        boundsRect[0].$2,
-        boundsRect[1].$2,
-      );
+  (double, double, double, double) get box =>
+      (boundsRect[0].$1, boundsRect[1].$1, boundsRect[0].$2, boundsRect[1].$2);
 }
 
 /// Ellipse points — matches Python ellipse_points from drafting/circular.py.
-List<List<double>> ellipsePoints(double w, double h,
-    {double start = 0, double end = 2 * math.pi, double error = 0.025}) {
+List<List<double>> ellipsePoints(
+  double w,
+  double h, {
+  double start = 0,
+  double end = 2 * math.pi,
+  double error = 0.025,
+}) {
   final radius = math.max(w, h) / 2;
   final acosVal = math.acos(math.max(-1.0, 1 - error / radius));
   final count = math.max(
-      1,
-      math.min(4096, ((end - start) / math.max(0.001, 2 * acosVal)).ceil()));
+    1,
+    math.min(4096, ((end - start) / math.max(0.001, 2 * acosVal)).ceil()),
+  );
   final points = <List<double>>[];
   for (var n = 0; n <= count; n++) {
     final t = start + (end - start) * n / count;
@@ -131,11 +138,20 @@ List<List<double>> ellipsePoints(double w, double h,
   return points;
 }
 
-List<(double, double)> ellipsePointPairs(double w, double h,
-    {double start = 0, double end = 2 * math.pi, double error = 0.025}) {
-  return ellipsePoints(w, h, start: start, end: end, error: error)
-      .map((p) => (p[0], p[1]))
-      .toList();
+List<(double, double)> ellipsePointPairs(
+  double w,
+  double h, {
+  double start = 0,
+  double end = 2 * math.pi,
+  double error = 0.025,
+}) {
+  return ellipsePoints(
+    w,
+    h,
+    start: start,
+    end: end,
+    error: error,
+  ).map((p) => (p[0], p[1])).toList();
 }
 
 const double tau = 2 * math.pi;
@@ -176,15 +192,16 @@ List<(double, double)> solidArcs(MapItem item, {List<MapItem>? openings}) {
       final rimY = ry * math.sin(angle);
       final reach = opening.height / 2;
       if (helper.hypot(cx - rimX, cy - rimY) >
-          math.max(0.5, item.stroke / 2) + reach + 1e-7) continue;
+          math.max(0.5, item.stroke / 2) + reach + 1e-7) {
+        continue;
+      }
       final dx = b[0] - a[0];
       final dy = b[1] - a[1];
       final length = helper.hypot(dx, dy);
       final tx = -rx * math.sin(angle);
       final ty = ry * math.cos(angle);
       final tangent = helper.hypot(tx, ty);
-      if (length == 0 ||
-          (dx * ty - dy * tx).abs() / (length * tangent) > 0.2) {
+      if (length == 0 || (dx * ty - dy * tx).abs() / (length * tangent) > 0.2) {
         continue;
       }
       final half = math.asin(math.min(1.0, length / (2 * tangent)));
@@ -209,7 +226,9 @@ List<(double, double)> solidArcs(MapItem item, {List<MapItem>? openings}) {
 /// Matches Python wall_polygon() from scene_renderer.py.
 List<List<double>> wallPolygon(Barrier barrier) {
   final angle = math.atan2(
-      barrier.endY - barrier.startY, barrier.endX - barrier.startX);
+    barrier.endY - barrier.startY,
+    barrier.endX - barrier.startX,
+  );
   final nx = -math.sin(angle) * barrier.radius;
   final ny = math.cos(angle) * barrier.radius;
   return [
@@ -245,8 +264,7 @@ class OpeningIndex {
   OpeningIndex._(this.openings, this._boxes);
 
   factory OpeningIndex(List<MapItem> items) {
-    final openings =
-        items.where((i) => openingKinds.contains(i.kind)).toList();
+    final openings = items.where((i) => openingKinds.contains(i.kind)).toList();
     final boxes = <(double, double, double, double)>[];
     for (final opening in openings) {
       final (start, end, reach) = openingAxis(opening);
@@ -265,9 +283,10 @@ class OpeningIndex {
   List<MapItem> forWall(MapItem item) {
     if (!wallKinds.contains(item.kind) || openings.isEmpty) return [];
     if (item.kind == 'circle_wall') {
-      final points = ellipsePoints(item.width, item.height)
-          .map((p) => item.localToWorld(p[0], p[1]))
-          .toList();
+      final points = ellipsePoints(
+        item.width,
+        item.height,
+      ).map((p) => item.localToWorld(p[0], p[1])).toList();
       final radius = math.max(0.5, item.stroke / 2);
       final box = (
         points.map((p) => p[0]).reduce(math.min) - radius,
@@ -296,8 +315,7 @@ class OpeningIndex {
     return result;
   }
 
-  List<MapItem> _queryBox(
-      (double, double, double, double) query) {
+  List<MapItem> _queryBox((double, double, double, double) query) {
     final result = <MapItem>[];
     for (var i = 0; i < openings.length; i++) {
       if (_overlaps(query, _boxes[i])) result.add(openings[i]);
@@ -306,7 +324,9 @@ class OpeningIndex {
   }
 
   static bool _overlaps(
-      (double, double, double, double) a, (double, double, double, double) b) {
+    (double, double, double, double) a,
+    (double, double, double, double) b,
+  ) {
     return a.$1 <= b.$3 && a.$3 >= b.$1 && a.$2 <= b.$4 && a.$4 >= b.$2;
   }
 }
@@ -314,11 +334,16 @@ class OpeningIndex {
 List<Barrier> wallSections(MapItem item, {List<MapItem>? openings}) {
   if (item.kind == 'circle_wall') {
     return _circularWallSections(
-        item, openings, math.max(0.5, item.stroke / 2));
+      item,
+      openings,
+      math.max(0.5, item.stroke / 2),
+    );
   }
   final sections = <Barrier>[];
   for (final edge in wallEdges(item)) {
-    sections.addAll(_solidSections(edge.start, edge.end, edge.radius, openings));
+    sections.addAll(
+      _solidSections(edge.start, edge.end, edge.radius, openings),
+    );
   }
   return sections;
 }
@@ -336,22 +361,32 @@ List<Barrier> collisionWallSections(MapItem item, {List<MapItem>? openings}) {
 }
 
 List<Barrier> _circularWallSections(
-    MapItem item, List<MapItem>? openings, double radius) {
+  MapItem item,
+  List<MapItem>? openings,
+  double radius,
+) {
   final sections = <Barrier>[];
   for (final arcRange in solidArcs(item, openings: openings)) {
-    final points = ellipsePoints(item.width, item.height,
-        start: arcRange.$1, end: arcRange.$2);
-    final worldPoints =
-        points.map((p) => item.localToWorld(p[0], p[1])).toList();
+    final points = ellipsePoints(
+      item.width,
+      item.height,
+      start: arcRange.$1,
+      end: arcRange.$2,
+    );
+    final worldPoints = points
+        .map((p) => item.localToWorld(p[0], p[1]))
+        .toList();
     for (var i = 0; i < worldPoints.length - 1; i++) {
-      sections.add(Barrier(
-        startX: worldPoints[i][0],
-        startY: worldPoints[i][1],
-        endX: worldPoints[i + 1][0],
-        endY: worldPoints[i + 1][1],
-        radius: radius,
-        flat: true,
-      ));
+      sections.add(
+        Barrier(
+          startX: worldPoints[i][0],
+          startY: worldPoints[i][1],
+          endX: worldPoints[i + 1][0],
+          endY: worldPoints[i + 1][1],
+          radius: radius,
+          flat: true,
+        ),
+      );
     }
   }
   return sections;
@@ -372,12 +407,13 @@ List<WallEdge> wallEdges(MapItem item, {bool collision = false}) {
       : math.max(0.5, item.stroke / 2);
 
   if (item.kind == 'circle_wall') {
-    final points = ellipsePoints(item.width, item.height)
-        .map((p) => item.localToWorld(p[0], p[1]))
-        .toList();
+    final points = ellipsePoints(
+      item.width,
+      item.height,
+    ).map((p) => item.localToWorld(p[0], p[1])).toList();
     return [
       for (var i = 0; i < points.length - 1; i++)
-        WallEdge(points[i], points[i + 1], radius)
+        WallEdge(points[i], points[i + 1], radius),
     ];
   }
 
@@ -391,15 +427,35 @@ List<WallEdge> wallEdges(MapItem item, {bool collision = false}) {
   final w = item.width;
   final h = item.height;
   return [
-    WallEdge(item.localToWorld(-radius, 0), item.localToWorld(w + radius, 0), radius),
-    WallEdge(item.localToWorld(w, -radius), item.localToWorld(w, h + radius), radius),
-    WallEdge(item.localToWorld(w + radius, h), item.localToWorld(-radius, h), radius),
-    WallEdge(item.localToWorld(0, h + radius), item.localToWorld(0, -radius), radius),
+    WallEdge(
+      item.localToWorld(-radius, 0),
+      item.localToWorld(w + radius, 0),
+      radius,
+    ),
+    WallEdge(
+      item.localToWorld(w, -radius),
+      item.localToWorld(w, h + radius),
+      radius,
+    ),
+    WallEdge(
+      item.localToWorld(w + radius, h),
+      item.localToWorld(-radius, h),
+      radius,
+    ),
+    WallEdge(
+      item.localToWorld(0, h + radius),
+      item.localToWorld(0, -radius),
+      radius,
+    ),
   ];
 }
 
 List<Barrier> _solidSections(
-    List<double> start, List<double> end, double radius, List<MapItem>? openings) {
+  List<double> start,
+  List<double> end,
+  double radius,
+  List<MapItem>? openings,
+) {
   final dx = end[0] - start[0];
   final dy = end[1] - start[1];
   final length = helper.hypot(dx, dy);
@@ -415,7 +471,9 @@ List<Barrier> _solidSections(
       final oy = bW[1] - aW[1];
       final openingLength = helper.hypot(ox, oy);
       if (openingLength == 0 ||
-          (ux * oy - uy * ox).abs() / openingLength > 1e-5) continue;
+          (ux * oy - uy * ox).abs() / openingLength > 1e-5) {
+        continue;
+      }
       final distA = ((aW[0] - start[0]) * uy - (aW[1] - start[1]) * ux).abs();
       final distB = ((bW[0] - start[0]) * uy - (bW[1] - start[1]) * ux).abs();
       if (math.max(distA, distB) > radius + reach + 1e-7) continue;
@@ -434,26 +492,30 @@ List<Barrier> _solidSections(
     final lo = cutEntry.$1;
     final hi = cutEntry.$2;
     if (lo > cursor + 1e-7) {
-      sections.add(Barrier(
-        startX: start[0] + cursor * ux,
-        startY: start[1] + cursor * uy,
-        endX: start[0] + lo * ux,
-        endY: start[1] + lo * uy,
-        radius: radius,
-        flat: true,
-      ));
+      sections.add(
+        Barrier(
+          startX: start[0] + cursor * ux,
+          startY: start[1] + cursor * uy,
+          endX: start[0] + lo * ux,
+          endY: start[1] + lo * uy,
+          radius: radius,
+          flat: true,
+        ),
+      );
     }
     cursor = math.max(cursor, hi);
   }
   if (cursor < length - 1e-7) {
-    sections.add(Barrier(
-      startX: start[0] + cursor * ux,
-      startY: start[1] + cursor * uy,
-      endX: start[0] + length * ux,
-      endY: start[1] * 1.0 + length * uy,
-      radius: radius,
-      flat: true,
-    ));
+    sections.add(
+      Barrier(
+        startX: start[0] + cursor * ux,
+        startY: start[1] + cursor * uy,
+        endX: start[0] + length * ux,
+        endY: start[1] * 1.0 + length * uy,
+        radius: radius,
+        flat: true,
+      ),
+    );
   }
   return sections;
 }
@@ -495,14 +557,16 @@ List<Barrier> _barriersForItem(MapItem item, List<MapItem> openings) {
       ),
     ];
     if (!item.gateOpen) {
-      barriers.add(Barrier(
-        startX: item.localToWorld(0, item.height / 2)[0],
-        startY: item.localToWorld(0, item.height / 2)[1],
-        endX: item.localToWorld(item.width, item.height / 2)[0],
-        endY: item.localToWorld(item.width, item.height / 2)[1],
-        radius: radius,
-        flat: true,
-      ));
+      barriers.add(
+        Barrier(
+          startX: item.localToWorld(0, item.height / 2)[0],
+          startY: item.localToWorld(0, item.height / 2)[1],
+          endX: item.localToWorld(item.width, item.height / 2)[0],
+          endY: item.localToWorld(item.width, item.height / 2)[1],
+          radius: radius,
+          flat: true,
+        ),
+      );
     }
     return barriers;
   }
@@ -519,7 +583,7 @@ List<Barrier> _barriersForItem(MapItem item, List<MapItem> openings) {
         endX: item.localToWorld(item.width, item.height)[0],
         endY: item.localToWorld(item.width, item.height)[1],
         radius: collisionThickness(item) / 2,
-      )
+      ),
     ];
   }
   if (item.kind == 'stairs' && item.collisionThickness != null) {

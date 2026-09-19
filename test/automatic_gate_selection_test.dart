@@ -96,4 +96,22 @@ void main() {
     expect(alternative, isNotNull);
     expect(main, isNot(equals(alternative)));
   });
+
+  test('all hazard-blocked official gates produce no evacuation option', () {
+    final nav = WorldNavigator(
+      twoGateScene(),
+      markerX: 500,
+      markerY: 250,
+      collisionRadius: 10,
+    );
+
+    final main = nav.campusGateApproach('main_gate')!;
+    final secondary = nav.campusGateApproach('secondary_gate')!;
+    nav.addFireHazard(main[0], main[1]);
+    nav.addEarthquakeHazard(secondary[0], secondary[1]);
+
+    expect(nav.allEvacuationGatesBlocked, isTrue);
+    expect(nav.rankEvacuationGates(), isEmpty);
+    expect(nav.recommendedEvacuationGateKind(), isNull);
+  });
 }

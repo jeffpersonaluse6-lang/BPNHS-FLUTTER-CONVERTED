@@ -111,7 +111,8 @@ class MapItem {
       parentId: json['parent_id'] as String?,
       stairDirection: json['stair_direction'] as String? ?? 'up',
       stairTo: (json['stair_to'] as num?)?.toInt(),
-      completedFloors: (json['completed_floors'] as List<dynamic>?)
+      completedFloors:
+          (json['completed_floors'] as List<dynamic>?)
               ?.map((e) => (e as num).toInt())
               .toList() ??
           const [],
@@ -124,12 +125,12 @@ class MapItem {
       freeBuild: json['free_build'] as bool? ?? false,
       stairFrom: (json['stair_from'] as num?)?.toInt(),
       stairEnabled: json['stair_enabled'] as bool? ?? true,
-      stairSpeedMultiplier:
-          (json['stair_speed_multiplier'] as num?)?.toDouble(),
-      collisionThickness:
-          (json['collision_thickness'] as num?)?.toDouble(),
+      stairSpeedMultiplier: (json['stair_speed_multiplier'] as num?)
+          ?.toDouble(),
+      collisionThickness: (json['collision_thickness'] as num?)?.toDouble(),
       opacity: (json['opacity'] as num?)?.toDouble() ?? 1,
-      circleOpenings: (json['circle_openings'] as List<dynamic>?)
+      circleOpenings:
+          (json['circle_openings'] as List<dynamic>?)
               ?.map((e) => CircleOpening.fromJson(e as Map<String, dynamic>))
               .toList() ??
           const [],
@@ -172,9 +173,7 @@ class MapItem {
     }
     if (kind == 'wall' || kind == 'line' || kind == 'railing') {
       final length2 = width * width + height * height;
-      final t = length2 > 0
-          ? (lx * width + ly * height) / length2
-          : 0.0;
+      final t = length2 > 0 ? (lx * width + ly * height) / length2 : 0.0;
       final clampedT = t.clamp(0.0, 1.0);
       final radius = kind == 'railing' ? stroke / 2 + 2 : stroke / 2;
       return hypot(lx - clampedT * width, ly - clampedT * height) <=

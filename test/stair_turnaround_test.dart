@@ -5,7 +5,7 @@ import 'package:flutter_runtime/navigation/stairs.dart';
 import 'package:flutter_runtime/navigation/world_navigator.dart';
 
 void main() {
-  test('completed stair turnaround goes outside then back to source side', () {
+  test('completed stair turnaround exits the completed stair footprint', () {
     final building = MapItem(
       kind: 'building',
       x: 0,
@@ -53,20 +53,9 @@ void main() {
     navigator.lastCompletedStair = StairSection(stair, 3, 2);
 
     final guide = navigator.completedStairTurnaroundGuide();
-    expect(guide.length, greaterThanOrEqualTo(5));
+    expect(guide.length, greaterThanOrEqualTo(2));
 
     final ft = navigator.floorTransform(building);
-    final outsideLocals = guide
-        .map((p) => ft.unproject(p[0], p[1]))
-        .map((p) => stair.worldToLocal(p[0], p[1]))
-        .toList();
-
-    expect(
-      outsideLocals.any((p) => p[0] > stair.width),
-      isTrue,
-      reason: 'DOWN switchback should bypass around the outside right edge',
-    );
-
     final finalFloorLocal = ft.unproject(guide.last[0], guide.last[1]);
     final finalProgress = sectionProgress(
       navigator.lastCompletedStair!,
@@ -75,8 +64,8 @@ void main() {
     ).$3;
     expect(
       finalProgress,
-      lessThan(0),
-      reason: 'turnaround must finish beyond the SOURCE side before re-entry',
+      greaterThan(1),
+      reason: 'turnaround must finish beyond the completed target side',
     );
   });
 }

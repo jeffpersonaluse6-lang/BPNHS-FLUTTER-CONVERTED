@@ -10,8 +10,7 @@ class FloorTransform {
   final double cosine;
   final double sine;
 
-  const FloorTransform(
-      this.parent, this.sx, this.sy, this.cosine, this.sine);
+  const FloorTransform(this.parent, this.sx, this.sy, this.cosine, this.sine);
 
   factory FloorTransform.build(MapItem parent) {
     final sx = parent.width / (parent.floorWidth ?? 1436);
@@ -26,10 +25,7 @@ class FloorTransform {
     var px = (x - p.floorOriginX) * sx;
     var py = (y - p.floorOriginY) * sy;
     if (p.mirrored) px = p.width - px;
-    return [
-      p.x + px * cosine - py * sine,
-      p.y + px * sine + py * cosine,
-    ];
+    return [p.x + px * cosine - py * sine, p.y + px * sine + py * cosine];
   }
 
   /// Unproject world coordinates to local floor coordinates.
