@@ -144,24 +144,11 @@ class RouteStepBuilder {
     }
 
     if (lower.contains('follow stair waypoint')) {
-      final wpMatch = RegExp(r'waypoint\s+(\d+)/(\d+)').firstMatch(lower);
-      if (wpMatch != null) {
-        final currentIdx = int.tryParse(wpMatch.group(1) ?? '') ?? 0;
-        final total = int.tryParse(wpMatch.group(2) ?? '') ?? 0;
-        final goingDown = targetFloor != null && currentFloor != null &&
-            targetFloor < currentFloor;
-        final direction = goingDown ? 'down' : 'up';
-        final progress = total > 1 && currentIdx < total
-            ? '${(currentIdx / total * 100).round()}% of the way'
-            : null;
-        return RouteStep(
-          instruction: 'Go $direction the stairs',
-          detail: progress ?? 'Keep moving through the stairwell.',
-          icon: 'stairs',
-        );
-      }
-      return const RouteStep(
-        instruction: 'Go through the stairs',
+      final goingDown = targetFloor != null && currentFloor != null &&
+          targetFloor < currentFloor;
+      final direction = goingDown ? 'down' : 'up';
+      return RouteStep(
+        instruction: 'Go $direction the stairs',
         detail: 'Keep moving through the stairwell.',
         icon: 'stairs',
       );
