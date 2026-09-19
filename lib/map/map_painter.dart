@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import '../models/map_item.dart';
 import '../models/map_scene.dart';
@@ -25,6 +26,11 @@ class MapPainter extends CustomPainter {
   final double routeRevealProgress;
   final int hazardStateHash;
   final int surfaceStateHash;
+
+  /// Cached static map picture (campus + buildings). Avoids re-rasterizing
+  /// all buildings, walls, and floor items every frame when only hazards,
+  /// routes, or the player move.
+  static ui.Picture? _staticMapCache;
 
   MapPainter({
     required this.scene,
@@ -72,14 +78,57 @@ class MapPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    // Check if the static map cache is still valid. The static map only
+    // depends on camera transform and floor/view state — not on hazards,
+    // routes, or player position.
+    final staticKey = Object.hash(
+      (cameraX * 100).round(),
+      (cameraY * 100).round(),
+      (cameraScale * 10000).round(),
+      (cameraRotation * 1000000).round(),
+      surfaceStateHash,
+    );
+
+    if (_staticMapCache == null || _cacheStaticHash != staticKey) {
+      _rebuildStaticMapCache(staticKey);
+    }
+
+    // Replay the cached static map (includes its own save/restore, so
+    // after this the canvas is back in screen space).
+    canvas.drawPicture(_staticMapCache!);
+
+    // Dynamic layers: hazards and routes need the world-space transform.
     canvas.save();
     canvas.translate(cameraX, cameraY);
     canvas.scale(cameraScale);
     canvas.rotate(cameraRotation);
 
+    _drawHazards(canvas);
+    _drawRoute(canvas);
+
+    canvas.restore();
+
+    // Player is drawn in screen space.
+    _drawPlayer(canvas, size);
+  }
+
+  static int _cacheStaticHash = 0;
+
+  /// Cached TextPainter instances for hazard labels keyed by "label:fontSize".
+  static final Map<String, TextPainter> _textPainterCache = {};
+
+  void _rebuildStaticMapCache(int key) {
+    final recorder = ui.PictureRecorder();
+    final c = Canvas(recorder);
+
+    c.save();
+    c.translate(cameraX, cameraY);
+    c.scale(cameraScale);
+    c.rotate(cameraRotation);
+
     final paint = Paint();
     paint.color = const Color(0xFFEDF8FA);
-    canvas.drawRect(Rect.fromLTWH(0, 0, scene.width, scene.height), paint);
+    c.drawRect(Rect.fromLTWH(0, 0, scene.width, scene.height), paint);
 
     final campusItems = scene.floors['Campus'] ?? [];
     final campusIndex = OpeningIndex(campusItems);
@@ -90,23 +139,21 @@ class MapPainter extends CustomPainter {
       _scale = 1;
       if (roofKinds.contains(item.kind)) {
         _layerOpacity = _roofObjectOpacity(item, null);
-        _renderItem(canvas, item, null);
+        _renderItem(c, item, null);
       } else {
         _layerOpacity = 1;
-        _renderItem(canvas, item, campusIndex.forWall(item));
+        _renderItem(c, item, campusIndex.forWall(item));
       }
     }
 
     for (final building in scene.buildings()) {
-      _renderBuilding(canvas, building);
+      _renderBuilding(c, building);
     }
 
-    _drawHazards(canvas);
-    _drawRoute(canvas);
+    c.restore();
 
-    canvas.restore();
-
-    _drawPlayer(canvas, size);
+    _staticMapCache = recorder.endRecording();
+    _cacheStaticHash = key;
   }
 
   void _renderBuilding(Canvas canvas, MapItem building) {
@@ -276,17 +323,20 @@ class MapPainter extends CustomPainter {
         canvas.drawCircle(center, 11 / safeScale, core);
       }
 
-      final textPainter = TextPainter(
-        text: TextSpan(
-          text: label,
-          style: TextStyle(
-            color: labelColor,
-            fontSize: 11 / safeScale,
-            fontWeight: FontWeight.w800,
+      final cacheKey = '$label:${(11 / safeScale).toStringAsFixed(2)}';
+      final textPainter = _textPainterCache.putIfAbsent(cacheKey, () {
+        return TextPainter(
+          text: TextSpan(
+            text: label,
+            style: TextStyle(
+              color: labelColor,
+              fontSize: 11 / safeScale,
+              fontWeight: FontWeight.w800,
+            ),
           ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
+          textDirection: TextDirection.ltr,
+        )..layout();
+      });
 
       textPainter.paint(
         canvas,

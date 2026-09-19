@@ -127,10 +127,15 @@ class SameFloorPathfinder {
     // With no preference regions the original fast direct-path behavior
     // is preserved. When roads are configured, A* must be allowed to compare
     // the direct line against a slightly longer but preferred-road route.
-    if (preferredAreas.isEmpty &&
-        riskZones.isEmpty &&
-        lineIsWalkable(start, goal)) {
-      return [List<double>.from(start), List<double>.from(goal)];
+    //
+    // When risk zones are present, the direct shortcut is still safe if the
+    // segment is geometrically walkable AND does not enter any risk zone's
+    // core area. This avoids falling through to full A* for connector paths
+    // that merely pass near (but not through) a hazard.
+    if (preferredAreas.isEmpty && lineIsWalkable(start, goal)) {
+      if (riskZones.isEmpty || !_segmentCrossesRiskZone(start, goal)) {
+        return [List<double>.from(start), List<double>.from(goal)];
+      }
     }
 
     final nodes = _buildNodes(start, goal);
@@ -924,6 +929,45 @@ class SameFloorPathfinder {
 
     final averageRisk = accumulatedRisk / samples;
     return cost + length * riskWeight * averageRisk;
+  }
+
+  /// Returns true when the segment from [a] to [b] enters the core of any
+  /// risk zone. A segment "crosses" a zone if either endpoint is inside the
+  /// zone or the closest point on the segment to the zone center is inside
+  /// the zone radius. Segments that only pass through the influence halo
+  /// (outside the core radius) are considered safe for the fast shortcut.
+  bool _segmentCrossesRiskZone(List<double> a, List<double> b) {
+    if (riskZones.isEmpty) return false;
+    final dx = b[0] - a[0];
+    final dy = b[1] - a[1];
+    final length2 = dx * dx + dy * dy;
+
+    for (final zone in riskZones) {
+      // Quick check: either endpoint inside zone.
+      final ea = (a[0] - zone.x);
+      final eb = (b[0] - zone.x);
+      if (ea * ea + (a[1] - zone.y) * (a[1] - zone.y) <= zone.radius * zone.radius) {
+        return true;
+      }
+      if (eb * eb + (b[1] - zone.y) * (b[1] - zone.y) <= zone.radius * zone.radius) {
+        return true;
+      }
+
+      if (length2 <= 1e-9) continue;
+
+      // Closest point on segment to zone center.
+      final t = (((zone.x - a[0]) * dx + (zone.y - a[1]) * dy) / length2)
+          .clamp(0.0, 1.0)
+          .toDouble();
+      final cx = a[0] + dx * t;
+      final cy = a[1] + dy * t;
+      final distX = cx - zone.x;
+      final distY = cy - zone.y;
+      if (distX * distX + distY * distY <= zone.radius * zone.radius) {
+        return true;
+      }
+    }
+    return false;
   }
 
   double _preferredCoverage(List<double> a, List<double> b) {

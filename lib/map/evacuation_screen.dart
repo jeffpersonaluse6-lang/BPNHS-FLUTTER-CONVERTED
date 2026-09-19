@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/map_scene.dart';
 import '../models/math_helper.dart';
 import '../camera/smooth_camera.dart';
+import '../navigation/route_step_builder.dart';
 import '../navigation/world_navigator.dart';
 import 'map_painter.dart';
 
@@ -59,7 +60,10 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   bool _activeShooterMoving = false;
   final double _activeShooterSpeed = 60;
   double _movingShooterRerouteElapsed = 0;
-  static const double _movingShooterRerouteInterval = 0.30;
+  static const double _movingShooterRerouteInterval = 0.50;
+  /// Track total shooter displacement since last reroute to skip trivial moves.
+  double _shooterDisplacementSinceReroute = 0;
+  static const double _shooterRerouteMinDisplacement = 30.0;
 
   // Stage 2 route visualization. This stays same-floor only until stair routing
   // is added in a later stage.
@@ -94,6 +98,10 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
   static const double _routeLoadingMinSeconds = 0.22;
   static const double _routeRevealSeconds = 0.70;
+
+  // Step-by-step evacuation guidance. The current instruction is regenerated
+  // whenever the route changes and displayed as a persistent overlay.
+  RouteStep? _currentStep;
 
   static const double joystickBaseSize = 148;
   static const double joystickKnobSize = 56;
@@ -153,6 +161,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         (!moveMode || (joystickX == 0 && joystickY == 0))) {
       _routeNeedsFinalMovementRefresh = false;
       _updateLiveRoute(1.0);
+      _refreshCurrentStep();
       routeFinalizedAfterMovement = true;
     }
 
@@ -187,6 +196,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         );
       }
       _updateLiveRoute(dt);
+      _refreshCurrentStep();
       setState(() {});
     } else if (followActive) {
       if (_cameraSurfaceHoldFrames > 0) {
@@ -206,6 +216,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         diameter: playerSize,
       );
       if (shooterMoved) _updateLiveRoute(dt);
+      _refreshCurrentStep();
       if (changed ||
           routePresentationChanged ||
           shooterMoved ||
@@ -223,6 +234,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       // A moving shooter must repaint and keep the current evacuation route
       // updated even while the student is standing still.
       if (shooterMoved) _updateLiveRoute(dt);
+      _refreshCurrentStep();
       setState(() {});
     }
   }
@@ -540,6 +552,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                   ),
                 if (_showNoSafeRouteOverlay) _buildNoSafeRouteOverlay(),
                 if (_routeCalculating) _buildRouteLoadingOverlay(),
+                if (!_routeCalculating) _buildRouteStepOverlay(),
               ],
             ),
           ),
@@ -1252,6 +1265,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         _routeRefreshElapsed = 0;
         _refreshMultiFloorLeg();
       });
+      _refreshCurrentStep();
       return;
     }
 
@@ -1274,6 +1288,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
               : 'Route updated around the simulated hazard';
         }
       });
+      _refreshCurrentStep();
       return;
     }
 
@@ -1291,6 +1306,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             ? 'No safe route around the simulated hazard'
             : 'Route updated around the simulated hazard';
       });
+      _refreshCurrentStep();
     }
   }
 
@@ -1471,6 +1487,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
       navigator.moveHazard(id, nx, ny);
       moved = true;
+      _shooterDisplacementSinceReroute += step;
       remaining -= step;
 
       if (step >= distance - 1e-6) {
@@ -1587,6 +1604,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     });
 
     _movingShooterRerouteElapsed = _movingShooterRerouteInterval;
+    _shooterDisplacementSinceReroute = _shooterRerouteMinDisplacement;
 
     if (_evacuationRouteRole != null) {
       _updateLiveRoute(_movingShooterRerouteInterval);
@@ -1742,6 +1760,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         _routeRevealAnimating = false;
         _routeRevealProgress = 1;
       });
+      _refreshCurrentStep();
       return;
     }
 
@@ -1762,6 +1781,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         routeStatus = 'Finish the stair transition first';
         routeSelectionMode = false;
       });
+      _refreshCurrentStep();
       return;
     }
 
@@ -1773,6 +1793,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         _evacuationGateKind = null;
         _evacuationRouteRole = null;
       });
+      _refreshCurrentStep();
       return;
     }
 
@@ -1836,6 +1857,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         routeFloor = 1;
       }
     });
+    _refreshCurrentStep();
   }
 
   void _startRouteToFloorOne() {
@@ -1852,6 +1874,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       _routeRefreshElapsed = 0;
       _refreshMultiFloorLeg();
     });
+    _refreshCurrentStep();
   }
 
   void _beginCampusExitLeg() {
@@ -1889,6 +1912,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           ? 'Exit building → campus'
           : 'Exit building → ${_gateLabel(_evacuationGateKind!)}';
     }
+    _refreshCurrentStep();
   }
 
   void _resetActiveWaypointProgress() {
@@ -2407,12 +2431,17 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           final blockedNow = _activeShooterBlocksCurrentRoute();
           final periodicRefresh =
               _movingShooterRerouteElapsed >= _movingShooterRerouteInterval;
+          final movedEnough = _shooterDisplacementSinceReroute >=
+              _shooterRerouteMinDisplacement;
 
           // If the shooter enters the current blue route, reroute immediately.
           // Otherwise periodically refresh while it moves so the route can also
           // return to a shorter path after the shooter has moved away.
-          if (blockedNow || periodicRefresh) {
+          // Skip periodic reroutes when the shooter has barely moved to avoid
+          // redundant A* calls that produce the same (or nearly same) route.
+          if (blockedNow || (periodicRefresh && movedEnough)) {
             _movingShooterRerouteElapsed = 0;
+            _shooterDisplacementSinceReroute = 0;
 
             final refreshed = currentBuildingId == null
                 ? navigator.findSameFloorRoute(destination[0], destination[1])
@@ -2520,6 +2549,151 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     routeBuildingId = null;
     routeFloor = null;
     routeSelectionMode = false;
+    _currentStep = null;
+  }
+
+  void _refreshCurrentStep() {
+    _currentStep = RouteStepBuilder.buildCurrentStep(
+      routePoints: routePoints,
+      playerPosition: <double>[navigator.markerX, navigator.markerY],
+      routeStatus: routeStatus,
+      isStairTurnaround: _stairTurnaroundActive,
+      isMultiFloor: routeTargetFloor != null,
+      isCampusExit: _routeAcrossBuildingExit,
+      evacuationGateKind: _evacuationGateKind,
+      currentFloor: routeFloor,
+      targetFloor: routeTargetFloor,
+    );
+  }
+
+  Widget _buildRouteStepOverlay() {
+    final step = _currentStep;
+    if (step == null) return const SizedBox.shrink();
+
+    final isMobile = MediaQuery.sizeOf(context).width < 700;
+    final bottom = isMobile ? 180.0 : 60.0;
+
+    IconData iconData;
+    Color iconColor;
+    Color bgColor;
+    Color borderColor;
+
+    switch (step.icon) {
+      case 'blocked':
+        iconData = Icons.block;
+        iconColor = const Color(0xFFB42318);
+        bgColor = const Color(0xFFFEE4E2);
+        borderColor = const Color(0xFFD92D20);
+      case 'destination':
+        iconData = Icons.flag_rounded;
+        iconColor = const Color(0xFF16A34A);
+        bgColor = const Color(0xFFDCFCE7);
+        borderColor = const Color(0xFF16A34A);
+      case 'stairs':
+        iconData = Icons.stairs;
+        iconColor = const Color(0xFF7C3AED);
+        bgColor = const Color(0xFFF3E8FF);
+        borderColor = const Color(0xFF7C3AED);
+      case 'exit':
+        iconData = Icons.logout;
+        iconColor = const Color(0xFFEA580C);
+        bgColor = const Color(0xFFFFF7ED);
+        borderColor = const Color(0xFFEA580C);
+      case 'turn_right':
+        iconData = Icons.turn_right;
+        iconColor = const Color(0xFF2563EB);
+        bgColor = const Color(0xFFEFF6FF);
+        borderColor = const Color(0xFF2563EB);
+      case 'turn_left':
+        iconData = Icons.turn_left;
+        iconColor = const Color(0xFF2563EB);
+        bgColor = const Color(0xFFEFF6FF);
+        borderColor = const Color(0xFF2563EB);
+      case 'turn_around':
+        iconData = Icons.u_turn_left;
+        iconColor = const Color(0xFFD97706);
+        bgColor = const Color(0xFFFFFBEB);
+        borderColor = const Color(0xFFD97706);
+      case 'straight':
+        iconData = Icons.straight;
+        iconColor = const Color(0xFF2563EB);
+        bgColor = const Color(0xFFEFF6FF);
+        borderColor = const Color(0xFF2563EB);
+      case 'recalculating':
+        iconData = Icons.refresh;
+        iconColor = const Color(0xFF7C3AED);
+        bgColor = const Color(0xFFF3E8FF);
+        borderColor = const Color(0xFF7C3AED);
+      case 'floor_arrived':
+        iconData = Icons.check_circle_outline;
+        iconColor = const Color(0xFF16A34A);
+        bgColor = const Color(0xFFDCFCE7);
+        borderColor = const Color(0xFF16A34A);
+      default:
+        iconData = Icons.info_outline;
+        iconColor = const Color(0xFF183B56);
+        bgColor = const Color(0xFFF0F4F8);
+        borderColor = const Color(0xFFD8E2EC);
+    }
+
+    return Positioned(
+      left: 18,
+      right: 18,
+      bottom: bottom,
+      child: IgnorePointer(
+        child: Center(
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 420),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: bgColor.withValues(alpha: 0.97),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: borderColor.withValues(alpha: 0.6), width: 1.2),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x20000000),
+                  blurRadius: 14,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Icon(iconData, color: iconColor, size: 24),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        step.instruction,
+                        style: TextStyle(
+                          color: const Color(0xFF183B56),
+                          fontSize: isMobile ? 14 : 15,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      if (step.detail != null && step.detail!.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          step.detail!,
+                          style: TextStyle(
+                            color: const Color(0xFF5E7184),
+                            fontSize: isMobile ? 11 : 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   void _onMapTap(TapUpDetails details) {
@@ -2530,6 +2704,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         routeStatus = 'Finish the stair transition first';
         routeSelectionMode = false;
       });
+      _refreshCurrentStep();
       return;
     }
 
@@ -2561,6 +2736,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           _beginCampusExitLeg();
         }
       });
+      _refreshCurrentStep();
       return;
     }
 
@@ -2586,6 +2762,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         routeFloor = navigator.currentFloor;
       }
     });
+    _refreshCurrentStep();
   }
 
   List<double>? _gestureAnchor;

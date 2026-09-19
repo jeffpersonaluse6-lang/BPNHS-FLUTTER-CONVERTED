@@ -96,6 +96,19 @@ class WorldNavigator {
   final Map<String, RuntimeIndex<StairSection>> _sectionIndices = {};
   final Map<String, StairSection> _sectionsById = {};
 
+  /// Cached campus building footprint barriers. Buildings don't change at
+  /// runtime, so this is computed once and reused for every routing call.
+  /// The cache key includes the current building ID since that building is
+  /// excluded from the footprint barriers.
+  List<Barrier>? _cachedFootprintBarriers;
+  String? _cachedFootprintBuildingId;
+
+  /// Cached hazard pathfinder for the current hazard set. Invalidated whenever
+  /// hazards are added/removed/moved, so repeated _pathClearOfSurfaceHazards
+  /// calls for the same surface reuse one barrier index instead of rebuilding.
+  String? _hazardPathfinderKey;
+  SameFloorPathfinder? _cachedHazardPathfinder;
+
   late List<Barrier> groundBarriers;
   late List<PolygonBarrier> campusPreferredAreas;
   late RuntimeIndex<Barrier> groundIndex;
@@ -126,6 +139,7 @@ class WorldNavigator {
       floor: parent == null ? 1 : currentFloor,
     );
     hazards.add(zone);
+    _invalidateHazardPathfinderCache();
     return zone;
   }
 
@@ -140,6 +154,7 @@ class WorldNavigator {
       floor: parent == null ? 1 : currentFloor,
     );
     hazards.add(zone);
+    _invalidateHazardPathfinderCache();
     return zone;
   }
 
@@ -156,6 +171,7 @@ class WorldNavigator {
       floor: parent == null ? 1 : currentFloor,
     );
     hazards.add(zone);
+    _invalidateHazardPathfinderCache();
     return zone;
   }
 
@@ -169,6 +185,7 @@ class WorldNavigator {
   bool removeHazard(String id) {
     final before = hazards.length;
     hazards.removeWhere((hazard) => hazard.id == id);
+    if (hazards.length != before) _invalidateHazardPathfinderCache();
     return hazards.length != before;
   }
 
@@ -178,11 +195,13 @@ class WorldNavigator {
 
     hazard.x = x.clamp(0.0, scene.width).toDouble();
     hazard.y = y.clamp(0.0, scene.height).toDouble();
+    _invalidateHazardPathfinderCache();
     return true;
   }
 
   void clearHazards() {
     hazards.clear();
+    _invalidateHazardPathfinderCache();
   }
 
   List<HazardZone> get visibleHazards {
@@ -191,6 +210,11 @@ class WorldNavigator {
     return hazards
         .where((h) => h.matchesSurface(activeBuilding, activeFloor))
         .toList(growable: false);
+  }
+
+  void _invalidateHazardPathfinderCache() {
+    _cachedHazardPathfinder = null;
+    _hazardPathfinderKey = null;
   }
 
   List<Barrier> _hazardBarriersForSurface(
@@ -215,12 +239,22 @@ class WorldNavigator {
     final hazardBarriers = _hazardBarriersForSurface(buildingId, floor);
     if (hazardBarriers.isEmpty) return true;
 
-    final checker = SameFloorPathfinder(
-      barriers: hazardBarriers,
-      playerRadius: collisionRadius,
-      width: scene.width,
-      height: scene.height,
-    );
+    // Cache the pathfinder by hazard signature so repeated calls for the
+    // same surface during a single routing pass reuse one barrier index.
+    final key = '$buildingId:$floor:${hazardBarriers.length}';
+    SameFloorPathfinder checker;
+    if (_hazardPathfinderKey == key && _cachedHazardPathfinder != null) {
+      checker = _cachedHazardPathfinder!;
+    } else {
+      checker = SameFloorPathfinder(
+        barriers: hazardBarriers,
+        playerRadius: collisionRadius,
+        width: scene.width,
+        height: scene.height,
+      );
+      _hazardPathfinderKey = key;
+      _cachedHazardPathfinder = checker;
+    }
 
     for (var i = 1; i < path.length; i++) {
       if (!checker.lineIsWalkable(path[i - 1], path[i])) {
@@ -247,8 +281,15 @@ class WorldNavigator {
   }
 
   List<Barrier> _campusBuildingFootprintBarriers() {
-    final barriers = <Barrier>[];
+    // The excluded building depends on which building the player is currently
+    // inside, so include it in the cache identity.
     final currentBuildingId = parent?.id;
+    final key = currentBuildingId ?? '';
+    if (_cachedFootprintBarriers != null && _cachedFootprintBuildingId == key) {
+      return _cachedFootprintBarriers!;
+    }
+
+    final barriers = <Barrier>[];
 
     for (final building in scene.buildings()) {
       // The route may begin inside the building the user currently occupies,
@@ -280,6 +321,8 @@ class WorldNavigator {
       }
     }
 
+    _cachedFootprintBarriers = barriers;
+    _cachedFootprintBuildingId = key;
     return barriers;
   }
 
