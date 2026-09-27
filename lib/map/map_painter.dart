@@ -23,9 +23,13 @@ class MapPainter extends CustomPainter {
   final double playerSize;
   final double collisionRadius;
   final List<List<double>> routePoints;
+  final List<List<List<double>>> shooterPaths;
+  final Map<String, Offset> hazardRenderPositions;
   final double routeRevealProgress;
   final int hazardStateHash;
   final int surfaceStateHash;
+  final int shooterPathStateHash;
+  final int hazardRenderStateHash;
 
   /// Cached static map picture (campus + buildings). Avoids re-rasterizing
   /// all buildings, walls, and floor items every frame when only hazards,
@@ -43,6 +47,8 @@ class MapPainter extends CustomPainter {
     this.playerSize = 20,
     this.collisionRadius = 10,
     this.routePoints = const [],
+    this.shooterPaths = const <List<List<double>>>[],
+    this.hazardRenderPositions = const <String, Offset>{},
     this.routeRevealProgress = 1,
   }) : hazardStateHash = Object.hashAll([
          for (final hazard in navigator.hazards)
@@ -63,7 +69,17 @@ class MapPainter extends CustomPainter {
          navigator.transition?.source,
          navigator.transition?.target,
          navigator.transition?.progress,
-       );
+       ),
+       shooterPathStateHash = Object.hashAll([
+         for (final path in shooterPaths)
+           Object.hashAll([
+             for (final point in path) Object.hash(point[0], point[1]),
+           ]),
+       ]),
+       hazardRenderStateHash = Object.hashAll([
+         for (final entry in hazardRenderPositions.entries)
+           Object.hash(entry.key, entry.value.dx, entry.value.dy),
+       ]);
 
   FloorTransform? _ft;
   double _scale = 1;
@@ -104,6 +120,7 @@ class MapPainter extends CustomPainter {
     canvas.rotate(cameraRotation);
 
     _drawHazards(canvas);
+    _drawShooterPaths(canvas);
     _drawRoute(canvas);
 
     canvas.restore();
@@ -237,7 +254,8 @@ class MapPainter extends CustomPainter {
     final safeScale = cameraScale.abs() < 1e-9 ? 1.0 : cameraScale.abs();
 
     for (final hazard in navigator.visibleHazards) {
-      final center = Offset(hazard.x, hazard.y);
+      final center =
+          hazardRenderPositions[hazard.id] ?? Offset(hazard.x, hazard.y);
       final isEarthquake = hazard.kind == HazardKind.earthquake;
       final isFire = hazard.kind == HazardKind.fire;
 
@@ -307,13 +325,13 @@ class MapPainter extends CustomPainter {
           ..strokeCap = StrokeCap.round;
         final d = 10 / safeScale;
         canvas.drawLine(
-          Offset(hazard.x - d, hazard.y - d),
-          Offset(hazard.x + d, hazard.y + d),
+          Offset(center.dx - d, center.dy - d),
+          Offset(center.dx + d, center.dy + d),
           crossPaint,
         );
         canvas.drawLine(
-          Offset(hazard.x + d, hazard.y - d),
-          Offset(hazard.x - d, hazard.y + d),
+          Offset(center.dx + d, center.dy - d),
+          Offset(center.dx - d, center.dy + d),
           crossPaint,
         );
       } else {
@@ -341,9 +359,44 @@ class MapPainter extends CustomPainter {
       textPainter.paint(
         canvas,
         Offset(
-          hazard.x - textPainter.width / 2,
-          hazard.y + hazard.radius + 6 / safeScale,
+          center.dx - textPainter.width / 2,
+          center.dy + hazard.radius + 6 / safeScale,
         ),
+      );
+    }
+  }
+
+  void _drawShooterPaths(Canvas canvas) {
+    if (shooterPaths.isEmpty) return;
+    final safeScale = cameraScale.abs() < 1e-9 ? 1.0 : cameraScale.abs();
+    final glow = Paint()
+      ..color = const Color(0x66F97316)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 8 / safeScale
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final line = Paint()
+      ..color = const Color(0xFFFF5722)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3 / safeScale
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final pointPaint = Paint()
+      ..color = const Color(0xFFFF5722)
+      ..style = PaintingStyle.fill;
+
+    for (final points in shooterPaths) {
+      if (points.length < 2) continue;
+      final path = Path()..moveTo(points.first[0], points.first[1]);
+      for (var i = 1; i < points.length; i++) {
+        path.lineTo(points[i][0], points[i][1]);
+      }
+      canvas.drawPath(path, glow);
+      canvas.drawPath(path, line);
+      canvas.drawCircle(
+        Offset(points.last[0], points.last[1]),
+        5 / safeScale,
+        pointPaint,
       );
     }
   }
@@ -1300,6 +1353,8 @@ class MapPainter extends CustomPainter {
         oldDelegate.collisionRadius != collisionRadius ||
         oldDelegate.hazardStateHash != hazardStateHash ||
         oldDelegate.surfaceStateHash != surfaceStateHash ||
+        oldDelegate.shooterPathStateHash != shooterPathStateHash ||
+        oldDelegate.hazardRenderStateHash != hazardRenderStateHash ||
         oldDelegate.routeRevealProgress != routeRevealProgress ||
         !identical(oldDelegate.routePoints, routePoints);
   }

@@ -6,11 +6,7 @@ class RouteStep {
   final String? detail;
   final String icon;
 
-  const RouteStep({
-    required this.instruction,
-    this.detail,
-    required this.icon,
-  });
+  const RouteStep({required this.instruction, this.detail, required this.icon});
 
   @override
   bool operator ==(Object other) =>
@@ -65,13 +61,17 @@ class RouteStepBuilder {
 
     if (lower.contains('destination reached') ||
         lower.contains('campus destination reached') ||
+        lower.contains('assembly area reached') ||
+        lower.contains('evacuation area reached') ||
         lower.contains('main gate reached') ||
         lower.contains('secondary gate reached')) {
       final gateLabel = lower.contains('main gate')
           ? 'Main Gate'
           : lower.contains('secondary gate')
-              ? 'Secondary Gate'
-              : null;
+          ? 'Secondary Gate'
+          : lower.contains('assembly area') || lower.contains('evacuation area')
+          ? 'Assembly Area'
+          : null;
       return RouteStep(
         instruction: gateLabel != null
             ? '$gateLabel reached'
@@ -144,7 +144,9 @@ class RouteStepBuilder {
     }
 
     if (lower.contains('follow stair waypoint')) {
-      final goingDown = targetFloor != null && currentFloor != null &&
+      final goingDown =
+          targetFloor != null &&
+          currentFloor != null &&
           targetFloor < currentFloor;
       final direction = goingDown ? 'down' : 'up';
       return RouteStep(
@@ -158,7 +160,9 @@ class RouteStepBuilder {
       final floorMatch = RegExp(r'floor\s+(\d+)').firstMatch(lower);
       final floor = floorMatch?.group(1);
       return RouteStep(
-        instruction: floor != null ? 'Arrived at Floor $floor' : 'Floor reached',
+        instruction: floor != null
+            ? 'Arrived at Floor $floor'
+            : 'Floor reached',
         detail: 'You have reached the target floor.',
         icon: 'floor_arrived',
       );
@@ -168,8 +172,8 @@ class RouteStepBuilder {
       final gateLabel = lower.contains('main gate')
           ? 'Main Gate'
           : lower.contains('secondary gate')
-              ? 'Secondary Gate'
-              : null;
+          ? 'Secondary Gate'
+          : null;
       if (gateLabel != null) {
         return RouteStep(
           instruction: 'Head to $gateLabel',
@@ -239,7 +243,8 @@ class RouteStepBuilder {
     }
 
     if (lower.contains('route') &&
-        (lower.contains('evacuation route') || lower.contains('campus route'))) {
+        (lower.contains('evacuation route') ||
+            lower.contains('campus route'))) {
       if (isStairTurnaround) {
         return const RouteStep(
           instruction: 'Turn around to continue',
@@ -273,23 +278,28 @@ class RouteStepBuilder {
     );
 
     if (turnInfo == null) {
+      final isAssemblyArea =
+          evacuationGateKind?.startsWith('evacuation_area:') == true ||
+          evacuationGateKind?.startsWith('assembly_area:') == true;
       final gateLabel = evacuationGateKind == 'secondary_gate'
           ? 'Secondary Gate'
           : evacuationGateKind == 'main_gate'
-              ? 'Main Gate'
-              : null;
+          ? 'Main Gate'
+          : isAssemblyArea
+          ? 'Assembly Area'
+          : null;
 
       if (gateLabel != null) {
         return RouteStep(
           instruction: 'Walk toward $gateLabel',
+          detail: isAssemblyArea
+              ? '${_formatDistance(_totalRouteDistance(routePoints))} remaining.'
+              : null,
           icon: 'straight',
         );
       }
 
-      return const RouteStep(
-        instruction: 'Walk straight',
-        icon: 'straight',
-      );
+      return const RouteStep(instruction: 'Walk straight', icon: 'straight');
     }
 
     final turnName = _turnName(turnInfo.angleChange);

@@ -44,6 +44,8 @@ class StairRouteLeg {
 }
 
 class EvacuationGateOption {
+  /// Stable destination key. Gate keys remain `main_gate` and
+  /// `secondary_gate`; evacuation areas use `evacuation_area:<item id>`.
   final String kind;
   final double score;
   final List<List<double>> previewRoute;
@@ -54,6 +56,13 @@ class EvacuationGateOption {
     this.previewRoute = const [],
   });
 }
+
+const Set<String> _campusGateKinds = <String>{'main_gate', 'secondary_gate'};
+
+const Set<String> _assemblyAreaKinds = <String>{
+  'evacuation_area',
+  'assembly_area',
+};
 
 class WorldNavigator {
   StairSection? lastCompletedStair;
@@ -82,6 +91,12 @@ class WorldNavigator {
   // Simulation hazards are runtime-only. They do not modify the saved map.
   final List<HazardZone> hazards = <HazardZone>[];
   int _nextHazardId = 1;
+  final String _hazardSourceId =
+      '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}_'
+      '${math.Random.secure().nextInt(1 << 32).toRadixString(36)}';
+
+  String _newHazardId(String prefix) =>
+      '${prefix}_${_hazardSourceId}_${_nextHazardId++}';
 
   final Map<String, List<MapItem>> _stairObjects = {};
   final Map<String, RuntimeIndex<StairSection>> _stairIndices = {};
@@ -130,7 +145,7 @@ class WorldNavigator {
 
   HazardZone addFireHazard(double x, double y, {double radius = 40}) {
     final zone = HazardZone(
-      id: 'fire_${_nextHazardId++}',
+      id: _newHazardId('fire'),
       kind: HazardKind.fire,
       x: x,
       y: y,
@@ -145,7 +160,7 @@ class WorldNavigator {
 
   HazardZone addEarthquakeHazard(double x, double y, {double radius = 55}) {
     final zone = HazardZone(
-      id: 'earthquake_${_nextHazardId++}',
+      id: _newHazardId('earthquake'),
       kind: HazardKind.earthquake,
       x: x,
       y: y,
@@ -162,13 +177,40 @@ class WorldNavigator {
   /// active-shooter simulation. This does not track a person.
   HazardZone addActiveShooterHazard(double x, double y, {double radius = 70}) {
     final zone = HazardZone(
-      id: 'active_shooter_${_nextHazardId++}',
+      id: _newHazardId('active_shooter'),
       kind: HazardKind.activeShooter,
       x: x,
       y: y,
       radius: radius,
       buildingId: parent?.id,
       floor: parent == null ? 1 : currentFloor,
+    );
+    hazards.add(zone);
+    _invalidateHazardPathfinderCache();
+    return zone;
+  }
+
+  /// Replace a hazard owned by an external report source without disturbing
+  /// manually placed simulation hazards. The existing hazard/pathfinding
+  /// pipeline consumes this object exactly like every other hazard.
+  HazardZone setReportedHazard({
+    required String id,
+    required HazardKind kind,
+    required double x,
+    required double y,
+    required double radius,
+    required String? buildingId,
+    required int floor,
+  }) {
+    hazards.removeWhere((hazard) => hazard.id == id);
+    final zone = HazardZone(
+      id: id,
+      kind: kind,
+      x: x,
+      y: y,
+      radius: radius,
+      buildingId: buildingId,
+      floor: floor,
     );
     hazards.add(zone);
     _invalidateHazardPathfinderCache();
@@ -199,8 +241,12 @@ class WorldNavigator {
     return true;
   }
 
-  void clearHazards() {
-    hazards.clear();
+  void clearHazards({Set<String> exceptIds = const <String>{}}) {
+    if (exceptIds.isEmpty) {
+      hazards.clear();
+    } else {
+      hazards.removeWhere((hazard) => !exceptIds.contains(hazard.id));
+    }
     _invalidateHazardPathfinderCache();
   }
 
@@ -239,8 +285,7 @@ class WorldNavigator {
     final hazardBarriers = _hazardBarriersForSurface(buildingId, floor);
     if (hazardBarriers.isEmpty) return true;
 
-    // Cache the pathfinder by hazard signature so repeated calls for the
-    // same surface during a single routing pass reuse one barrier index.
+    // Cache the pathfinder by hazard signature
     final key = '$buildingId:$floor:${hazardBarriers.length}';
     SameFloorPathfinder checker;
     if (_hazardPathfinderKey == key && _cachedHazardPathfinder != null) {
@@ -1318,14 +1363,70 @@ class WorldNavigator {
     return exposure;
   }
 
+  String _campusDestinationKey(MapItem item) {
+    if (_campusGateKinds.contains(item.kind)) return item.kind;
+    return '${item.kind}:${item.id}';
+  }
+
+  bool _isAssemblyDestinationKey(String key) {
+    return key.startsWith('evacuation_area:') ||
+        key.startsWith('assembly_area:');
+  }
+
+  List<MapItem> campusAssemblyAreas() {
+    return (scene.floors[campus] ?? const <MapItem>[])
+        .where((item) => _assemblyAreaKinds.contains(item.kind))
+        .toList(growable: false);
+  }
+
+  /// Resolve a gate or assembly-area destination from its stable route key.
+  MapItem? campusEvacuationDestination(String key) {
+    for (final item in scene.floors[campus] ?? const <MapItem>[]) {
+      if (!_campusGateKinds.contains(item.kind) &&
+          !_assemblyAreaKinds.contains(item.kind)) {
+        continue;
+      }
+      if (_campusDestinationKey(item) == key) return item;
+    }
+    return null;
+  }
+
+  /// Active-threat areas are opt-in so a normal outdoor fire assembly area is
+  /// never silently treated as cover. Map data can configure one by including
+  /// "active shooter", "active threat", "lockdown", or "all emergencies" in
+  /// the area's label/subtitle. Gates remain valid active-threat fallbacks.
+  bool _supportsActiveShooter(MapItem area) {
+    final config = '${area.text} ${area.subtitle}'.toLowerCase();
+    return config.contains('active shooter') ||
+        config.contains('active_shooter') ||
+        config.contains('active threat') ||
+        config.contains('lockdown') ||
+        config.contains('all emergencies') ||
+        config.contains('all hazards');
+  }
+
+  int _destinationTypePriority(String key, HazardKind? emergencyKind) {
+    if (emergencyKind == HazardKind.fire ||
+        emergencyKind == HazardKind.earthquake ||
+        emergencyKind == HazardKind.activeShooter) {
+      return _isAssemblyDestinationKey(key) ? 0 : 1;
+    }
+    return 0;
+  }
+
   int _compareEvacuationOptionsBySafety(
     EvacuationGateOption a,
     EvacuationGateOption b,
     List<HazardZone> routeHazards,
+    HazardKind? emergencyKind,
   ) {
     if (routeHazards.isEmpty ||
         a.previewRoute.length < 2 ||
         b.previewRoute.length < 2) {
+      final typeDelta =
+          _destinationTypePriority(a.kind, emergencyKind) -
+          _destinationTypePriority(b.kind, emergencyKind);
+      if (typeDelta != 0) return typeDelta;
       final delta = a.score - b.score;
       if (delta.abs() > 1e-6) return delta < 0 ? -1 : 1;
       if (a.kind == b.kind) return 0;
@@ -1361,6 +1462,11 @@ class WorldNavigator {
       return exposureDelta < 0 ? -1 : 1;
     }
 
+    final typeDelta =
+        _destinationTypePriority(a.kind, emergencyKind) -
+        _destinationTypePriority(b.kind, emergencyKind);
+    if (typeDelta != 0) return typeDelta;
+
     final lengthDelta = a.score - b.score;
     if (lengthDelta.abs() > 1e-6) {
       return lengthDelta < 0 ? -1 : 1;
@@ -1375,25 +1481,75 @@ class WorldNavigator {
   /// On Campus/Floor 1 this uses the real road-aware collision-safe route.
   /// On upper floors the indoor descent cost is mostly shared by every gate,
   /// so a road-aware campus egress estimate is used until Floor 1 is reached.
-  bool isCampusGateBlocked(String kind) {
-    final target = campusGateApproach(kind);
-    if (target == null) return true;
+  bool isCampusEvacuationDestinationBlocked(String key) {
+    final destination = campusEvacuationDestination(key);
+    final target = campusDestinationApproach(key);
+    if (destination == null || target == null) return true;
 
-    for (final hazard in hazards) {
-      if (hazard.floor != 1) continue;
+    final isArea = _assemblyAreaKinds.contains(destination.kind);
 
+    bool hazardOverlapsArea(HazardZone hazard) {
+      final local = destination.worldToLocal(hazard.x, hazard.y);
+      final closestX = local[0].clamp(0.0, destination.width).toDouble();
+      final closestY = local[1].clamp(0.0, destination.height).toDouble();
+      final closestWorld = destination.localToWorld(closestX, closestY);
+      final distance = hypot(
+        hazard.x - closestWorld[0],
+        hazard.y - closestWorld[1],
+      );
+      final margin = hazard.kind == HazardKind.earthquake
+          ? 0.0
+          : hazardSafetyClearance;
+      return distance <= hazard.radius + margin + collisionRadius;
+    }
+
+    bool hazardOverlapsPoint(HazardZone hazard) {
       final dx = target[0] - hazard.x;
       final dy = target[1] - hazard.y;
       final distance = math.sqrt(dx * dx + dy * dy);
+      final margin = hazard.kind == HazardKind.earthquake
+          ? 0.0
+          : hazardSafetyClearance;
+      return distance <= hazard.radius + margin + collisionRadius;
+    }
 
-      // If the gate approach lies inside the modeled hazard + mandatory
-      // clearance, that exit is unavailable and must not be selected.
-      if (distance <= hazard.radius + hazardSafetyClearance + collisionRadius) {
+    for (final hazard in hazards) {
+      if (hazard.floor != 1) continue;
+      if (isArea ? hazardOverlapsArea(hazard) : hazardOverlapsPoint(hazard)) {
         return true;
       }
     }
 
     return false;
+  }
+
+  bool isCampusGateBlocked(String kind) {
+    if (!_campusGateKinds.contains(kind)) return true;
+    return isCampusEvacuationDestinationBlocked(kind);
+  }
+
+  List<String> _destinationKeysForEmergency(HazardKind? emergencyKind) {
+    final gates = <String>[
+      for (final kind in _campusGateKinds)
+        if (campusGate(kind) != null) kind,
+    ];
+
+    if (emergencyKind == null) return gates;
+
+    final areas = campusAssemblyAreas();
+    final eligibleAreas = emergencyKind == HazardKind.activeShooter
+        ? areas.where(_supportsActiveShooter)
+        : areas;
+
+    return <String>[
+      for (final area in eligibleAreas) _campusDestinationKey(area),
+      ...gates,
+    ];
+  }
+
+  bool allEvacuationDestinationsBlocked({HazardKind? emergencyKind}) {
+    final keys = _destinationKeysForEmergency(emergencyKind);
+    return keys.isNotEmpty && keys.every(isCampusEvacuationDestinationBlocked);
   }
 
   bool get allEvacuationGatesBlocked {
@@ -1411,21 +1567,23 @@ class WorldNavigator {
     return configured > 0 && blocked == configured;
   }
 
-  List<EvacuationGateOption> rankEvacuationGates() {
+  List<EvacuationGateOption> rankEvacuationDestinations({
+    HazardKind? emergencyKind,
+  }) {
     if (transition != null) return const <EvacuationGateOption>[];
 
     final options = <EvacuationGateOption>[];
-    for (final kind in const ['main_gate', 'secondary_gate']) {
-      final target = campusGateApproach(kind);
-      if (isCampusGateBlocked(kind)) continue;
+    for (final key in _destinationKeysForEmergency(emergencyKind)) {
+      final target = campusDestinationApproach(key);
+      if (isCampusEvacuationDestinationBlocked(key)) continue;
       if (target == null) continue;
 
       if (parent == null || currentFloor == 1) {
-        final route = findCampusGateRoute(kind);
+        final route = findCampusDestinationRoute(key);
         if (route.isEmpty) continue;
         options.add(
           EvacuationGateOption(
-            kind: kind,
+            kind: key,
             score: _routeLength(route),
             previewRoute: route,
           ),
@@ -1433,9 +1591,9 @@ class WorldNavigator {
         continue;
       }
 
-      final estimate = _estimateUpperFloorGateCost(kind);
+      final estimate = _estimateUpperFloorDestinationCost(key);
       if (estimate == null) continue;
-      options.add(EvacuationGateOption(kind: kind, score: estimate));
+      options.add(EvacuationGateOption(kind: key, score: estimate));
     }
 
     final floorOneHazards = hazards
@@ -1443,9 +1601,18 @@ class WorldNavigator {
         .toList(growable: false);
 
     options.sort(
-      (a, b) => _compareEvacuationOptionsBySafety(a, b, floorOneHazards),
+      (a, b) => _compareEvacuationOptionsBySafety(
+        a,
+        b,
+        floorOneHazards,
+        emergencyKind,
+      ),
     );
     return options;
+  }
+
+  List<EvacuationGateOption> rankEvacuationGates() {
+    return rankEvacuationDestinations();
   }
 
   String? recommendedEvacuationGateKind({bool alternative = false}) {
@@ -1455,9 +1622,9 @@ class WorldNavigator {
     return ranked[index].kind;
   }
 
-  double? _estimateUpperFloorGateCost(String kind) {
+  double? _estimateUpperFloorDestinationCost(String key) {
     final building = parent;
-    final target = campusGateApproach(kind);
+    final target = campusDestinationApproach(key);
     if (building == null || target == null || currentFloor <= 1) return null;
 
     // IMPORTANT: do not run campus A* here.
@@ -1486,17 +1653,24 @@ class WorldNavigator {
 
   /// Stage 5: find a configured campus evacuation gate.
   MapItem? campusGate(String kind) {
-    if (kind != 'main_gate' && kind != 'secondary_gate') return null;
-    for (final item in scene.floors[campus] ?? const <MapItem>[]) {
-      if (item.kind == kind) return item;
-    }
-    return null;
+    if (!_campusGateKinds.contains(kind)) return null;
+    return campusEvacuationDestination(kind);
   }
 
-  /// Returns a walkable point immediately INSIDE the campus side of a gate.
-  List<double>? campusGateApproach(String kind) {
-    final gate = campusGate(kind);
-    if (gate == null) return null;
+  /// Returns a walkable destination point for either a gate or an assembly
+  /// area. Areas use their center; gates use the inside-campus approach point.
+  List<double>? campusDestinationApproach(String key) {
+    final destination = campusEvacuationDestination(key);
+    if (destination == null) return null;
+
+    if (_assemblyAreaKinds.contains(destination.kind)) {
+      return destination.localToWorld(
+        destination.width / 2,
+        destination.height / 2,
+      );
+    }
+
+    final gate = destination;
 
     final clearance = math.max(
       18.0,
@@ -1524,11 +1698,19 @@ class WorldNavigator {
     return centerDistance(a) <= centerDistance(b) ? a : b;
   }
 
-  /// Route the current Campus/Floor-1 position to a campus evacuation gate.
-  List<List<double>> findCampusGateRoute(String kind) {
-    if (isCampusGateBlocked(kind)) return const <List<double>>[];
+  /// Compatibility API retained for existing gate callers and tests.
+  List<double>? campusGateApproach(String kind) {
+    if (!_campusGateKinds.contains(kind)) return null;
+    return campusDestinationApproach(kind);
+  }
 
-    final target = campusGateApproach(kind);
+  /// Route to any configured gate or assembly-area destination.
+  List<List<double>> findCampusDestinationRoute(String key) {
+    if (isCampusEvacuationDestinationBlocked(key)) {
+      return const <List<double>>[];
+    }
+
+    final target = campusDestinationApproach(key);
     if (target == null || transition != null) {
       return const <List<double>>[];
     }
@@ -1539,6 +1721,12 @@ class WorldNavigator {
       return findFloor1CampusRoute(target[0], target[1]);
     }
     return const <List<double>>[];
+  }
+
+  /// Route the current Campus/Floor-1 position to a campus evacuation gate.
+  List<List<double>> findCampusGateRoute(String kind) {
+    if (!_campusGateKinds.contains(kind)) return const <List<double>>[];
+    return findCampusDestinationRoute(kind);
   }
 
   /// Stage 4: route from Floor 1 through a real collision opening and out onto
