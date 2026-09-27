@@ -1,8 +1,16 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import '../emergency/emergency_report.dart';
+import '../emergency/emergency_zone_registry.dart';
+import '../emergency/esp32_emergency_client.dart';
+import '../emergency/remote_emergency_bridge.dart';
+import '../emergency/remote_shooter_interpolator.dart';
+import '../emergency/staff_hazard_reporter.dart';
 import '../models/map_scene.dart';
 import '../models/math_helper.dart';
 import '../camera/smooth_camera.dart';
+import '../navigation/hazard.dart';
 import '../navigation/route_step_builder.dart';
 import '../navigation/world_navigator.dart';
 import 'map_painter.dart';
@@ -21,6 +29,27 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   late SmoothCamera camera;
   Timer? _ticker;
   DateTime? _lastTime;
+  late Esp32EmergencyStatusClient _emergencyStatusClient;
+  late RemoteEmergencyBridge _remoteEmergencyBridge;
+  Timer? _emergencyPollTimer;
+  bool _emergencyPollInFlight = false;
+  bool _fastEmergencyPolling = false;
+  bool _staffPasswordDialogOpen = false;
+  EmergencyStatus? _pendingEmergencyStatus;
+  String? _lastEmergencyServerId;
+  int _lastEmergencyRevision = -1;
+  final StaffHazardReporter _staffHazardReporter = StaffHazardReporter();
+  final Map<String, EmergencyReport> _activeSharedReports =
+      <String, EmergencyReport>{};
+  bool _staffReportBusy = false;
+  bool _sharedShooterSyncInFlight = false;
+  bool _sharedShooterSyncPending = false;
+  double _sharedShooterSyncElapsed = 0;
+  static const double _sharedShooterSyncInterval = 0.10;
+  final Map<String, double> _remoteShooterMovementSinceReroute =
+      <String, double>{};
+  final RemoteShooterInterpolator _remoteShooterInterpolator =
+      RemoteShooterInterpolator();
 
   double playerSize = 8;
   double get collisionRadius => playerSize / 2;
@@ -61,6 +90,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   final double _activeShooterSpeed = 60;
   double _movingShooterRerouteElapsed = 0;
   static const double _movingShooterRerouteInterval = 0.50;
+
   /// Track total shooter displacement since last reroute to skip trivial moves.
   double _shooterDisplacementSinceReroute = 0;
   static const double _shooterRerouteMinDisplacement = 30.0;
@@ -118,7 +148,374 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     navigator.update(navigator.markerX, navigator.markerY);
     camera = SmoothCamera();
     camera.center([navigator.markerX, navigator.markerY]);
+    _emergencyStatusClient = Esp32EmergencyStatusClient();
+    _remoteEmergencyBridge = RemoteEmergencyBridge(
+      navigator: navigator,
+      zones: EmergencyZoneRegistry(widget.scene),
+    );
+    _startEmergencyPolling();
     _startTicker();
+  }
+
+  void _startEmergencyPolling() {
+    unawaited(_pollEmergencyStatus());
+    _emergencyPollTimer = Timer.periodic(
+      const Duration(milliseconds: 300),
+      (_) => unawaited(_pollEmergencyStatus()),
+    );
+  }
+
+  void _refreshEmergencyPollingRate() {
+    final shouldPollFast = _activeSharedReports.values.any(
+      (report) =>
+          report.active &&
+          report.type == EmergencyReportType.activeThreat &&
+          report.moving,
+    );
+    if (shouldPollFast == _fastEmergencyPolling) return;
+
+    _fastEmergencyPolling = shouldPollFast;
+    _emergencyPollTimer?.cancel();
+    _emergencyPollTimer = Timer.periodic(
+      Duration(milliseconds: shouldPollFast ? 100 : 300),
+      (_) => unawaited(_pollEmergencyStatus()),
+    );
+  }
+
+  Future<void> _pollEmergencyStatus() async {
+    if (_emergencyPollInFlight) return;
+    _emergencyPollInFlight = true;
+    try {
+      final status = await _emergencyStatusClient.fetchStatus();
+      if (!mounted) return;
+      if (_staffPasswordDialogOpen) {
+        _pendingEmergencyStatus = status;
+      } else {
+        _applyEmergencyStatus(status);
+      }
+    } on SocketException {
+      // The ESP32 network is optional while the app is used off-site.
+    } on TimeoutException {
+      // A lost local connection must not interrupt movement or show alerts.
+    } on HttpException {
+      // Invalid HTTP replies are retried on the next polling interval.
+    } on FormatException {
+      // Ignore malformed status data instead of disturbing user navigation.
+    } finally {
+      _emergencyPollInFlight = false;
+    }
+  }
+
+  void _applyEmergencyStatus(EmergencyStatus status) {
+    final serverId = status.serverId;
+    if (_lastEmergencyServerId != null && serverId == null) {
+      // Once a server session is known, ignore replies from older firmware
+      // that cannot identify its boot session.
+      return;
+    }
+    if (serverId != null &&
+        _lastEmergencyServerId != null &&
+        serverId != _lastEmergencyServerId) {
+      // ESP32 rebooted and cleared its in-memory reports; revisions start over.
+      _lastEmergencyRevision = -1;
+      _remoteShooterMovementSinceReroute.clear();
+    }
+    if (serverId != null) _lastEmergencyServerId = serverId;
+    if (status.revision < _lastEmergencyRevision) return;
+    _lastEmergencyRevision = status.revision;
+
+    final previousReports = Map<String, EmergencyReport>.from(
+      _activeSharedReports,
+    );
+    final previousIds = _activeSharedReports.keys.toSet();
+    final idsToCheck = <String>{
+      ...previousIds,
+      ...status.hazards.map((report) => report.hazardId!),
+    };
+    final routeSafetyBefore = <String, bool>{
+      for (final reportId in idsToCheck)
+        reportId: _sharedHazardBlocksCurrentRoute(reportId),
+    };
+    final previousPositions = <String, Offset>{
+      for (final reportId in idsToCheck)
+        if (_sharedHazardForReport(reportId) case final hazard?)
+          reportId: Offset(hazard.x, hazard.y),
+    };
+    final update = _remoteEmergencyBridge.apply(status);
+    for (final report in status.hazards) {
+      if (report.type != EmergencyReportType.activeThreat) continue;
+      final reportId = report.hazardId!;
+      final remoteId = RemoteEmergencyBridge.remoteHazardId(reportId);
+      if (!update.movedHazardIds.contains(remoteId)) continue;
+      final previous = previousPositions[reportId];
+      final current = navigator.hazardById(remoteId);
+      final oldReport = previousReports[reportId];
+      if (previous == null || current == null) continue;
+      if (oldReport != null &&
+          (oldReport.buildingId != report.buildingId ||
+              oldReport.floor != report.floor)) {
+        continue;
+      }
+      _remoteShooterInterpolator.retarget(
+        remoteId,
+        _remoteShooterInterpolator.positions[remoteId] ?? previous,
+        Offset(current.x, current.y),
+      );
+    }
+    _remoteShooterInterpolator.retainOnly(
+      _remoteEmergencyBridge.remoteHazardIds,
+    );
+    _activeSharedReports
+      ..clear()
+      ..addEntries(
+        status.hazards.map((report) => MapEntry(report.hazardId!, report)),
+      );
+    _refreshEmergencyPollingRate();
+
+    final reportSelectionChanged =
+        previousIds.length != _activeSharedReports.length ||
+        !previousIds.containsAll(_activeSharedReports.keys);
+    var routeSafetyChanged = false;
+    final reportsAfter = <String, EmergencyReport>{
+      for (final report in status.hazards) report.hazardId!: report,
+    };
+    for (final reportId in idsToCheck) {
+      final oldReport = previousReports[reportId];
+      final newReport = reportsAfter[reportId];
+      final oldBlocks = routeSafetyBefore[reportId] ?? false;
+      final newBlocks = _sharedHazardBlocksCurrentRoute(reportId);
+      if (oldBlocks != newBlocks) {
+        routeSafetyChanged = true;
+        _remoteShooterMovementSinceReroute.remove(reportId);
+        continue;
+      }
+      if (!oldBlocks || oldReport == null || newReport == null) {
+        _remoteShooterMovementSinceReroute.remove(reportId);
+        continue;
+      }
+
+      final before = previousPositions[reportId];
+      final after = _sharedHazardForReport(reportId);
+      if (before == null ||
+          after == null ||
+          oldReport.signature == newReport.signature) {
+        continue;
+      }
+      if (oldReport.type != EmergencyReportType.activeThreat ||
+          newReport.type != EmergencyReportType.activeThreat) {
+        routeSafetyChanged = true;
+        continue;
+      }
+
+      final distance = hypot(after.x - before.dx, after.y - before.dy);
+      final accumulated =
+          (_remoteShooterMovementSinceReroute[reportId] ?? 0) + distance;
+      if (accumulated >= _shooterRerouteMinDisplacement) {
+        routeSafetyChanged = true;
+        _remoteShooterMovementSinceReroute.remove(reportId);
+      } else {
+        _remoteShooterMovementSinceReroute[reportId] = accumulated;
+      }
+    }
+    if (!update.changed && !reportSelectionChanged) return;
+
+    setState(() {
+      routeStatus = update.unknownZones.isNotEmpty
+          ? 'Staff report uses unknown zone: ${update.unknownZones.first}'
+          : _activeSharedReports.isEmpty
+          ? 'Shared hazard reports cleared'
+          : '${_activeSharedReports.length} shared hazard(s) active';
+    });
+    if (routeSafetyChanged) _rerouteAfterHazardChange();
+  }
+
+  Future<String?> _requestStaffPassword({required bool clearing}) async {
+    final controller = TextEditingController();
+    _staffPasswordDialogOpen = true;
+    try {
+      final password = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: const Text('Are you a staff member?'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  clearing
+                      ? 'Enter the staff password to clear this shared report.'
+                      : 'Enter the staff password to report this hazard to all connected SAFEROUTE users.',
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Staff password',
+                    border: OutlineInputBorder(),
+                  ),
+                  onSubmitted: (value) {
+                    final trimmed = value.trim();
+                    if (trimmed.isNotEmpty) {
+                      Navigator.pop(dialogContext, trimmed);
+                    }
+                  },
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final value = controller.text.trim();
+                  if (value.isNotEmpty) {
+                    Navigator.pop(dialogContext, value);
+                  }
+                },
+                child: Text(clearing ? 'Clear Report' : 'Report Hazard'),
+              ),
+            ],
+          );
+        },
+      );
+
+      // showDialog completes as soon as pop starts, while the dialog's reverse
+      // transition can still be mounted. Let that route finish before the
+      // caller updates the map or opens a snackbar.
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      return password;
+    } finally {
+      controller.dispose();
+      _staffPasswordDialogOpen = false;
+      final pendingStatus = _pendingEmergencyStatus;
+      _pendingEmergencyStatus = null;
+      if (mounted && pendingStatus != null) {
+        _applyEmergencyStatus(pendingStatus);
+      }
+    }
+  }
+
+  Future<void> _reportSelectedHazard(String hazardId) async {
+    if (_staffReportBusy) return;
+    final hazard = navigator.hazardById(hazardId);
+    if (hazard == null || RemoteEmergencyBridge.isRemoteHazardId(hazard.id)) {
+      return;
+    }
+
+    final password = await _requestStaffPassword(clearing: false);
+    if (!mounted || password == null) return;
+
+    setState(() => _staffReportBusy = true);
+    try {
+      final status = await _staffHazardReporter.report(
+        hazard: hazard,
+        staffPassword: password,
+        keepCredentialForMovement: hazard.kind == HazardKind.activeShooter,
+        moving: hazard.kind == HazardKind.activeShooter && _activeShooterMoving,
+        path:
+            hazard.kind == HazardKind.activeShooter &&
+                _activeShooterActorId == hazard.id &&
+                _activeShooterPath.length >= 2
+            ? _activeShooterPath
+            : null,
+      );
+      if (!mounted) return;
+      _applyEmergencyStatus(status);
+      _showStaffReportMessage('Hazard reported to connected users.');
+    } on StaffAuthenticationException {
+      if (mounted) _showStaffReportMessage('Incorrect staff password.');
+    } on SharedHazardConflictException {
+      if (mounted) {
+        _showStaffReportMessage('Another shared hazard must be cleared first.');
+      }
+    } on Esp32RequestException catch (error) {
+      if (mounted) _showStaffReportMessage('ESP32: ${error.message}');
+    } on SocketException {
+      if (mounted) _showStaffReportMessage('Cannot reach the ESP32 network.');
+    } on TimeoutException {
+      if (mounted) _showStaffReportMessage('ESP32 request timed out.');
+    } on HttpException {
+      if (mounted) _showStaffReportMessage('ESP32 rejected the report.');
+    } on FormatException {
+      if (mounted) _showStaffReportMessage('ESP32 returned invalid data.');
+    } finally {
+      if (mounted) setState(() => _staffReportBusy = false);
+    }
+  }
+
+  Future<void> _clearSharedHazard(String hazardId) async {
+    if (_staffReportBusy || !_activeSharedReports.containsKey(hazardId)) return;
+    final password = await _requestStaffPassword(clearing: true);
+    if (!mounted || password == null) return;
+
+    setState(() => _staffReportBusy = true);
+    try {
+      final status = await _staffHazardReporter.clear(
+        hazardId: hazardId,
+        staffPassword: password,
+      );
+      if (!mounted) return;
+      _applyEmergencyStatus(status);
+      _showStaffReportMessage(
+        'Shared report cleared. The local hazard remains on this device.',
+      );
+    } on StaffAuthenticationException {
+      if (mounted) _showStaffReportMessage('Incorrect staff password.');
+    } on SharedHazardConflictException {
+      if (mounted) _showStaffReportMessage('The shared hazard has changed.');
+    } on Esp32RequestException catch (error) {
+      if (mounted) _showStaffReportMessage('ESP32: ${error.message}');
+    } on SocketException {
+      if (mounted) _showStaffReportMessage('Cannot reach the ESP32 network.');
+    } on TimeoutException {
+      if (mounted) _showStaffReportMessage('ESP32 request timed out.');
+    } on HttpException {
+      if (mounted) _showStaffReportMessage('ESP32 rejected the request.');
+    } on FormatException {
+      if (mounted) _showStaffReportMessage('ESP32 returned invalid data.');
+    } finally {
+      if (mounted) setState(() => _staffReportBusy = false);
+    }
+  }
+
+  void _showStaffReportMessage(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Widget _buildHazardReportActions(String hazardId) {
+    final isShared = _activeSharedReports.containsKey(hazardId);
+    return Row(
+      children: [
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: _staffReportBusy
+                ? null
+                : () => _reportSelectedHazard(hazardId),
+            icon: const Icon(Icons.campaign_outlined, size: 18),
+            label: const Text('Report Hazard'),
+          ),
+        ),
+        if (isShared) ...[
+          const SizedBox(width: 6),
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: _staffReportBusy
+                  ? null
+                  : () => _clearSharedHazard(hazardId),
+              icon: const Icon(Icons.notifications_off_outlined, size: 18),
+              label: const Text('Clear Report'),
+            ),
+          ),
+        ],
+      ],
+    );
   }
 
   void _startTicker() {
@@ -151,6 +548,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   void _tick(double dt) {
     final routePresentationChanged = _updateRoutePresentation(dt);
     final shooterMoved = _updateActiveShooterMovement(dt);
+    final remoteShooterAnimating = _remoteShooterInterpolator.advance(dt);
     var routeFinalizedAfterMovement = false;
 
     // The live route is throttled while the joystick is held for performance.
@@ -203,6 +601,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         _cameraSurfaceHoldFrames--;
         if (routePresentationChanged ||
             shooterMoved ||
+            remoteShooterAnimating ||
             routeFinalizedAfterMovement) {
           setState(() {});
         }
@@ -220,6 +619,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       if (changed ||
           routePresentationChanged ||
           shooterMoved ||
+          remoteShooterAnimating ||
           routeFinalizedAfterMovement) {
         setState(() {});
       }
@@ -230,6 +630,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       }
     } else if (routePresentationChanged ||
         shooterMoved ||
+        remoteShooterAnimating ||
         routeFinalizedAfterMovement) {
       // A moving shooter must repaint and keep the current evacuation route
       // updated even while the student is standing still.
@@ -455,6 +856,9 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   @override
   void dispose() {
     _ticker?.cancel();
+    _emergencyPollTimer?.cancel();
+    _emergencyStatusClient.close();
+    _staffHazardReporter.dispose();
     super.dispose();
   }
 
@@ -518,6 +922,33 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                                     ? const <List<double>>[]
                                     : routePoints,
                                 routeRevealProgress: _routeRevealProgress,
+                                hazardRenderPositions:
+                                    _remoteShooterInterpolator.positions,
+                                shooterPaths: <List<List<double>>>[
+                                  for (final report
+                                      in _activeSharedReports.values)
+                                    if (report.type ==
+                                            EmergencyReportType.activeThreat &&
+                                        report.hazardId !=
+                                            _activeShooterActorId &&
+                                        report.path.length >= 2 &&
+                                        report.buildingId ==
+                                            navigator.parent?.id &&
+                                        report.floor == navigator.currentFloor)
+                                      report.path,
+                                  if (_activeShooterPath.length >= 2 &&
+                                      _activeShooterActorId != null &&
+                                      navigator
+                                              .hazardById(
+                                                _activeShooterActorId!,
+                                              )
+                                              ?.matchesSurface(
+                                                navigator.parent?.id,
+                                                navigator.currentFloor,
+                                              ) ==
+                                          true)
+                                    _activeShooterPath,
+                                ],
                               ),
                               size: Size.infinite,
                             ),
@@ -848,6 +1279,39 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                   foregroundColor: const Color(0xFFB42318),
                 ),
               ),
+            if (_activeSharedReports.length == 1) ...[
+              const SizedBox(width: 6),
+              OutlinedButton.icon(
+                onPressed: _staffReportBusy
+                    ? null
+                    : () =>
+                          _clearSharedHazard(_activeSharedReports.keys.single),
+                icon: const Icon(Icons.notifications_off_outlined),
+                label: const Text('Clear Report'),
+              ),
+            ] else if (_activeSharedReports.length > 1) ...[
+              const SizedBox(width: 6),
+              PopupMenuButton<String>(
+                enabled: !_staffReportBusy,
+                onSelected: _clearSharedHazard,
+                itemBuilder: (context) => _activeSharedReports.values
+                    .map(
+                      (report) => PopupMenuItem<String>(
+                        value: report.hazardId!,
+                        child: Text(
+                          'Clear ${_sharedHazardLabel(report.type)} · '
+                          '${report.hazardId}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
+                    .toList(growable: false),
+                child: Chip(
+                  avatar: const Icon(Icons.campaign_outlined, size: 18),
+                  label: Text('${_activeSharedReports.length} shared hazards'),
+                ),
+              ),
+            ],
             if (navigator.hazards.isNotEmpty) ...[
               const SizedBox(width: 6),
               IconButton(
@@ -937,7 +1401,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     final placed = _selectedFireHazardId != null;
 
     return Container(
-      width: 220,
+      width: 300,
       padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.95),
@@ -951,43 +1415,53 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           ),
         ],
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(
-            Icons.local_fire_department,
-            color: Color(0xFFB42318),
-            size: 20,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              placed ? 'Fire hazard marked' : 'Tap map to place fire',
-              style: const TextStyle(
-                color: Color(0xFF7A271A),
-                fontWeight: FontWeight.w700,
-                fontSize: 13,
+          Row(
+            children: [
+              const Icon(
+                Icons.local_fire_department,
+                color: Color(0xFFB42318),
+                size: 20,
               ),
-            ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  placed ? 'Fire hazard marked' : 'Tap map to place fire',
+                  style: const TextStyle(
+                    color: Color(0xFF7A271A),
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Close',
+                visualDensity: VisualDensity.compact,
+                onPressed: () {
+                  setState(() {
+                    _firePlacementMode = false;
+                    _selectedFireHazardId = null;
+                  });
+                },
+                icon: const Icon(Icons.close, size: 18),
+              ),
+            ],
           ),
-          IconButton(
-            tooltip: 'Close',
-            visualDensity: VisualDensity.compact,
-            onPressed: () {
-              setState(() {
-                _firePlacementMode = false;
-                _selectedFireHazardId = null;
-              });
-            },
-            icon: const Icon(Icons.close, size: 18),
-          ),
+          if (_selectedFireHazardId case final hazardId?) ...[
+            const SizedBox(height: 8),
+            _buildHazardReportActions(hazardId),
+          ],
         ],
       ),
     );
   }
 
   Widget _buildEarthquakeResizePanel() {
+    final hazardId = _selectedEarthquakeHazardId;
     return Container(
-      width: 230,
+      width: 300,
       padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.96),
@@ -1001,67 +1475,72 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           ),
         ],
       ),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(
-            Icons.broken_image_outlined,
-            color: Color(0xFF6B5B45),
-            size: 20,
-          ),
-          const SizedBox(width: 8),
-          const Expanded(
-            child: Text(
-              'Blocked pathway',
-              style: TextStyle(
-                color: Color(0xFF4B4337),
-                fontWeight: FontWeight.w700,
-                fontSize: 13,
+          Row(
+            children: [
+              const Icon(
+                Icons.broken_image_outlined,
+                color: Color(0xFF6B5B45),
+                size: 20,
               ),
-            ),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Blocked pathway',
+                  style: TextStyle(
+                    color: Color(0xFF4B4337),
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+              if (hazardId != null)
+                IconButton(
+                  tooltip: 'Delete blockage',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () {
+                    navigator.removeHazard(hazardId);
+                    setState(() {
+                      _selectedEarthquakeHazardId = null;
+                      _earthquakePlacementMode = false;
+                      routeStatus =
+                          'Earthquake blockage removed · recalculating route';
+                    });
+                    _rerouteAfterHazardChange();
+                  },
+                  icon: const Icon(Icons.delete_outline, size: 19),
+                  color: const Color(0xFF6B5B45),
+                ),
+              IconButton(
+                tooltip: 'Close',
+                visualDensity: VisualDensity.compact,
+                onPressed: () {
+                  setState(() {
+                    _selectedEarthquakeHazardId = null;
+                  });
+                },
+                icon: const Icon(Icons.close, size: 18),
+              ),
+            ],
           ),
-          if (_selectedEarthquakeHazardId != null)
-            IconButton(
-              tooltip: 'Delete blockage',
-              visualDensity: VisualDensity.compact,
-              onPressed: () {
-                final id = _selectedEarthquakeHazardId;
-                if (id == null) return;
-
-                navigator.removeHazard(id);
-
-                setState(() {
-                  _selectedEarthquakeHazardId = null;
-                  _earthquakePlacementMode = false;
-                  routeStatus =
-                      'Earthquake blockage removed · recalculating route';
-                });
-
-                _rerouteAfterHazardChange();
-              },
-              icon: const Icon(Icons.delete_outline, size: 19),
-              color: const Color(0xFF6B5B45),
-            ),
-          IconButton(
-            tooltip: 'Close',
-            visualDensity: VisualDensity.compact,
-            onPressed: () {
-              setState(() {
-                _selectedEarthquakeHazardId = null;
-              });
-            },
-            icon: const Icon(Icons.close, size: 18),
-          ),
+          if (hazardId != null) ...[
+            const SizedBox(height: 8),
+            _buildHazardReportActions(hazardId),
+          ],
         ],
       ),
     );
   }
 
   Widget _buildActiveShooterResizePanel() {
-    final placed = _selectedActiveShooterHazardId != null;
+    final hazardId = _selectedActiveShooterHazardId;
+    final placed = hazardId != null;
     final hasPath = _activeShooterPath.length >= 2;
 
     return Container(
-      width: 270,
+      width: 340,
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.96),
@@ -1128,7 +1607,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
               ),
             ],
           ),
-          if (placed) ...[
+          if (hazardId != null) ...[
             const SizedBox(height: 4),
             Text(
               _activeShooterPathMode
@@ -1173,6 +1652,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                 ),
               ],
             ),
+            const SizedBox(height: 8),
+            _buildHazardReportActions(hazardId),
           ],
         ],
       ),
@@ -1362,7 +1843,17 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
   void _clearSimulationHazards() {
     final activeRole = _evacuationRouteRole;
-    navigator.clearHazards();
+    final shooterId = _activeShooterActorId;
+    final sharedShooter = shooterId == null
+        ? null
+        : navigator.hazardById(shooterId);
+    final retainedHazardIds = <String>{
+      ..._remoteEmergencyBridge.remoteHazardIds,
+      ..._activeSharedReports.keys.where(
+        (id) => navigator.hazardById(id) != null,
+      ),
+    };
+    navigator.clearHazards(exceptIds: retainedHazardIds);
     _activeShooterActorId = null;
     _selectedActiveShooterHazardId = null;
     _activeShooterPathMode = false;
@@ -1370,6 +1861,12 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     _activeShooterPath = const <List<double>>[];
     _activeShooterPathIndex = 1;
     _activeShooterPathDirection = 1;
+
+    if (sharedShooter != null &&
+        shooterId != null &&
+        _activeSharedReports.containsKey(shooterId)) {
+      unawaited(_syncSharedShooter(sharedShooter));
+    }
 
     setState(() {
       _selectedFireHazardId = null;
@@ -1392,10 +1889,29 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
   bool _activeShooterBlocksCurrentRoute() {
     final id = _activeShooterActorId;
-    if (id == null || routePoints.length < 2) return false;
+    return id != null && _hazardBlocksCurrentRoute(id);
+  }
+
+  bool _hazardBlocksCurrentRoute(String id) {
+    if (routePoints.length < 2) return false;
 
     final shooter = navigator.hazardById(id);
     if (shooter == null) return false;
+    return _hazardZoneBlocksCurrentRoute(shooter);
+  }
+
+  bool _sharedHazardBlocksCurrentRoute(String reportId) {
+    final hazard = _sharedHazardForReport(reportId);
+    return hazard != null && _hazardZoneBlocksCurrentRoute(hazard);
+  }
+
+  HazardZone? _sharedHazardForReport(String reportId) {
+    return navigator.hazardById(reportId) ??
+        navigator.hazardById(RemoteEmergencyBridge.remoteHazardId(reportId));
+  }
+
+  bool _hazardZoneBlocksCurrentRoute(HazardZone shooter) {
+    if (routePoints.length < 2) return false;
 
     // Floor-1 evacuation routes can continue from a building onto campus,
     // so every Floor-1 shooter zone is relevant spatially. On upper floors,
@@ -1442,6 +1958,61 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     }
 
     return false;
+  }
+
+  String _sharedHazardLabel(EmergencyReportType? type) {
+    return switch (type) {
+      EmergencyReportType.fire => 'Fire',
+      EmergencyReportType.blockedPath => 'Blocked path',
+      EmergencyReportType.activeThreat => 'Active threat',
+      null => 'Hazard',
+    };
+  }
+
+  void _scheduleSharedShooterSync(double dt) {
+    final id = _activeShooterActorId;
+    if (id == null || !_activeSharedReports.containsKey(id)) return;
+    _sharedShooterSyncElapsed += dt;
+    if (_sharedShooterSyncElapsed < _sharedShooterSyncInterval ||
+        _sharedShooterSyncInFlight) {
+      return;
+    }
+    _sharedShooterSyncElapsed = 0;
+    final shooter = navigator.hazardById(id);
+    if (shooter != null) unawaited(_syncSharedShooter(shooter));
+  }
+
+  Future<void> _syncSharedShooter(HazardZone shooter) async {
+    if (_sharedShooterSyncInFlight) {
+      // Do not lose a newly finished path just because the last position POST
+      // is still in flight. Send the latest complete snapshot immediately
+      // after the current request settles.
+      _sharedShooterSyncPending = true;
+      return;
+    }
+    _sharedShooterSyncInFlight = true;
+    try {
+      final status = await _staffHazardReporter.updateMovement(
+        hazard: shooter,
+        moving: _activeShooterMoving,
+        path: _activeShooterPath.length >= 2 ? _activeShooterPath : null,
+      );
+      if (mounted && status != null) _applyEmergencyStatus(status);
+    } on StaffAuthenticationException {
+      _staffHazardReporter.forget(shooter.id);
+    } on Object {
+      // Keep the local simulation responsive; the next interval retries.
+    } finally {
+      _sharedShooterSyncInFlight = false;
+      if (_sharedShooterSyncPending) {
+        _sharedShooterSyncPending = false;
+        final id = _activeShooterActorId;
+        final latest = id == null ? null : navigator.hazardById(id);
+        if (latest != null && _activeSharedReports.containsKey(id)) {
+          unawaited(_syncSharedShooter(latest));
+        }
+      }
+    }
   }
 
   bool _updateActiveShooterMovement(double dt) {
@@ -1497,6 +2068,8 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       }
     }
 
+    if (moved) _scheduleSharedShooterSync(dt);
+
     return moved;
   }
 
@@ -1545,6 +2118,11 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           ? 'Shooter path ready · press Start'
           : 'Shooter path needs at least one destination point';
     });
+    final id = _activeShooterActorId;
+    final shooter = id == null ? null : navigator.hazardById(id);
+    if (shooter != null && _activeSharedReports.containsKey(id)) {
+      unawaited(_syncSharedShooter(shooter));
+    }
   }
 
   void _onActiveShooterPathTap(TapUpDetails details) {
@@ -1560,6 +2138,12 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     if (!shooter.matchesSurface(activeBuildingId, activeFloor)) {
       setState(() {
         routeStatus = 'Return to the shooter floor before editing its path';
+      });
+      return;
+    }
+    if (_activeShooterPath.length >= 16) {
+      setState(() {
+        routeStatus = 'Shooter paths support up to 16 points';
       });
       return;
     }
@@ -1609,6 +2193,11 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     if (_evacuationRouteRole != null) {
       _updateLiveRoute(_movingShooterRerouteInterval);
     }
+    final id = _activeShooterActorId;
+    final shooter = id == null ? null : navigator.hazardById(id);
+    if (shooter != null && _activeSharedReports.containsKey(id)) {
+      unawaited(_syncSharedShooter(shooter));
+    }
   }
 
   void _resetActiveShooterMovement() {
@@ -1628,6 +2217,9 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
     if (_evacuationRouteRole != null) {
       _updateLiveRoute(1.0);
+    }
+    if (_activeSharedReports.containsKey(id)) {
+      unawaited(_syncSharedShooter(navigator.hazardById(id)!));
     }
   }
 
@@ -1712,8 +2304,19 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     joystickKnobPosition = Offset(center, center);
   }
 
-  String _gateLabel(String kind) =>
-      kind == 'secondary_gate' ? 'Secondary Gate' : 'Main Gate';
+  HazardKind? get _routingEmergencyKind {
+    if (navigator.hazards.isEmpty) return null;
+    return navigator.hazards.last.kind;
+  }
+
+  String _gateLabel(String destinationKey) {
+    if (destinationKey == 'secondary_gate') return 'Secondary Gate';
+    if (destinationKey == 'main_gate') return 'Main Gate';
+
+    final destination = navigator.campusEvacuationDestination(destinationKey);
+    final label = destination?.text.trim() ?? '';
+    return label.isEmpty ? 'Assembly Area' : label;
+  }
 
   String _evacuationRoleLabel() => 'Route';
 
@@ -1735,11 +2338,16 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
           : 'Calculating evacuation route…',
     );
 
-    final ranked = navigator.rankEvacuationGates();
+    final emergencyKind = _routingEmergencyKind;
+    final ranked = navigator.rankEvacuationDestinations(
+      emergencyKind: emergencyKind,
+    );
     final index = alternative ? 1 : 0;
 
     if (ranked.length <= index) {
-      final allBlocked = navigator.allEvacuationGatesBlocked;
+      final allBlocked = navigator.allEvacuationDestinationsBlocked(
+        emergencyKind: emergencyKind,
+      );
 
       setState(() {
         routePoints = const <List<double>>[];
@@ -1785,7 +2393,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       return;
     }
 
-    final destination = navigator.campusGateApproach(gateKind);
+    final destination = navigator.campusDestinationApproach(gateKind);
     if (destination == null) {
       setState(() {
         routeStatus =
@@ -1841,7 +2449,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
       final route = precomputedRoute.isNotEmpty
           ? precomputedRoute
-          : navigator.findCampusGateRoute(gateKind);
+          : navigator.findCampusDestinationRoute(gateKind);
       routePoints = route;
       if (route.isEmpty) {
         routeStatus = 'No route to ${_gateLabel(gateKind)}';
@@ -2341,15 +2949,22 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       );
 
       if (distanceToDestination <= (collisionRadius * 1.5).clamp(10.0, 30.0)) {
+        final reachedKey = _evacuationGateKind;
+        final reachedLabel = reachedKey == null ? null : _gateLabel(reachedKey);
+        final reachedAssemblyArea =
+            reachedKey?.startsWith('evacuation_area:') == true ||
+            reachedKey?.startsWith('assembly_area:') == true;
         routePoints = const [];
         _routeAcrossBuildingExit = false;
         _campusRouteDestination = null;
         _routeRefreshElapsed = 0;
         routeBuildingId = null;
         routeFloor = null;
-        routeStatus = _evacuationGateKind == null
+        routeStatus = reachedKey == null
             ? 'Campus destination reached'
-            : '${_gateLabel(_evacuationGateKind!)} reached';
+            : reachedAssemblyArea
+            ? 'Assembly Area reached · $reachedLabel'
+            : '$reachedLabel reached';
         _evacuationGateKind = null;
         _evacuationRouteRole = null;
         return;
@@ -2426,12 +3041,22 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
         _routeRefreshElapsed = 0;
 
         if (_activeShooterMoving) {
+          if (navigator.isCampusEvacuationDestinationBlocked(
+            _evacuationGateKind!,
+          )) {
+            _startRecommendedEvacuationRoute(
+              alternative: _evacuationRouteRole == 'alternative',
+            );
+            return;
+          }
+
           _movingShooterRerouteElapsed += dt;
 
           final blockedNow = _activeShooterBlocksCurrentRoute();
           final periodicRefresh =
               _movingShooterRerouteElapsed >= _movingShooterRerouteInterval;
-          final movedEnough = _shooterDisplacementSinceReroute >=
+          final movedEnough =
+              _shooterDisplacementSinceReroute >=
               _shooterRerouteMinDisplacement;
 
           // If the shooter enters the current blue route, reroute immediately.
@@ -2449,6 +3074,13 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
                     destination[0],
                     destination[1],
                   );
+
+            if (refreshed.isEmpty) {
+              _startRecommendedEvacuationRoute(
+                alternative: _evacuationRouteRole == 'alternative',
+              );
+              return;
+            }
 
             if (refreshed.isNotEmpty) {
               routePoints = refreshed;
@@ -2648,7 +3280,10 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
             decoration: BoxDecoration(
               color: bgColor.withValues(alpha: 0.97),
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: borderColor.withValues(alpha: 0.6), width: 1.2),
+              border: Border.all(
+                color: borderColor.withValues(alpha: 0.6),
+                width: 1.2,
+              ),
               boxShadow: const [
                 BoxShadow(
                   color: Color(0x20000000),
@@ -2697,7 +3332,15 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
   }
 
   void _onMapTap(TapUpDetails details) {
-    if (!routeSelectionMode || moveMode) return;
+    final world = camera.world([
+      details.localPosition.dx,
+      details.localPosition.dy,
+    ]);
+
+    if (!routeSelectionMode || moveMode) {
+      if (!moveMode) _selectLocalHazardAt(world);
+      return;
+    }
 
     if (navigator.transition != null) {
       setState(() {
@@ -2708,10 +3351,6 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       return;
     }
 
-    final world = camera.world([
-      details.localPosition.dx,
-      details.localPosition.dy,
-    ]);
     final targetX = world[0];
     final targetY = world[1];
 
@@ -2763,6 +3402,38 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       }
     });
     _refreshCurrentStep();
+  }
+
+  void _selectLocalHazardAt(List<double> world) {
+    HazardZone? selected;
+    for (final hazard in navigator.visibleHazards.reversed) {
+      if (RemoteEmergencyBridge.isRemoteHazardId(hazard.id)) continue;
+      if (hazard.edgeDistanceTo(world[0], world[1]) <= 12) {
+        selected = hazard;
+        break;
+      }
+    }
+    if (selected == null) return;
+
+    setState(() {
+      _firePlacementMode = false;
+      _earthquakePlacementMode = false;
+      _activeShooterPlacementMode = false;
+      _activeShooterPathMode = false;
+      _selectedFireHazardId = null;
+      _selectedEarthquakeHazardId = null;
+      _selectedActiveShooterHazardId = null;
+
+      switch (selected!.kind) {
+        case HazardKind.fire:
+          _selectedFireHazardId = selected.id;
+        case HazardKind.earthquake:
+          _selectedEarthquakeHazardId = selected.id;
+        case HazardKind.activeShooter:
+          _selectedActiveShooterHazardId = selected.id;
+          _activeShooterActorId = selected.id;
+      }
+    });
   }
 
   List<double>? _gestureAnchor;
