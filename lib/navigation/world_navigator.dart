@@ -1382,6 +1382,10 @@ class WorldNavigator {
   /// Resolve a gate or assembly-area destination from its stable route key.
   MapItem? campusEvacuationDestination(String key) {
     for (final item in scene.floors[campus] ?? const <MapItem>[]) {
+      if (key == 'faculty:${item.id}' &&
+          item.text.toLowerCase().contains('faculty')) {
+        return item;
+      }
       if (!_campusGateKinds.contains(item.kind) &&
           !_assemblyAreaKinds.contains(item.kind)) {
         continue;
@@ -1486,7 +1490,9 @@ class WorldNavigator {
     final target = campusDestinationApproach(key);
     if (destination == null || target == null) return true;
 
-    final isArea = _assemblyAreaKinds.contains(destination.kind);
+    final isArea =
+        _assemblyAreaKinds.contains(destination.kind) ||
+        key.startsWith('faculty:');
 
     bool hazardOverlapsArea(HazardZone hazard) {
       final local = destination.worldToLocal(hazard.x, hazard.y);
@@ -1615,6 +1621,47 @@ class WorldNavigator {
     return rankEvacuationDestinations();
   }
 
+  /// Faculty is a designated fallback only when neither official exit is usable.
+  EvacuationGateOption? facultyFallback() {
+    if (transition != null || rankEvacuationGates().isNotEmpty) return null;
+    final options = <EvacuationGateOption>[];
+    for (final item in scene.floors[campus] ?? const <MapItem>[]) {
+      if (item.kind != 'building' && !_assemblyAreaKinds.contains(item.kind)) {
+        continue;
+      }
+      if (!item.text.toLowerCase().contains('faculty')) continue;
+      final key = 'faculty:${item.id}';
+      if (isCampusEvacuationDestinationBlocked(key)) continue;
+      if (parent != null && currentFloor > 1) {
+        if (findRouteTowardFloor(1) == null) return null;
+        options.add(
+          EvacuationGateOption(
+            kind: key,
+            score: _estimateUpperFloorDestinationCost(key)!,
+          ),
+        );
+        continue;
+      }
+      final route = findCampusDestinationRoute(key);
+      if (route.isNotEmpty) {
+        options.add(
+          EvacuationGateOption(
+            kind: key,
+            score: _routeLength(route),
+            previewRoute: route,
+          ),
+        );
+      }
+    }
+    final floorOneHazards = hazards
+        .where((hazard) => hazard.floor == 1)
+        .toList(growable: false);
+    options.sort(
+      (a, b) => _compareEvacuationOptionsBySafety(a, b, floorOneHazards, null),
+    );
+    return options.isEmpty ? null : options.first;
+  }
+
   String? recommendedEvacuationGateKind({bool alternative = false}) {
     final ranked = rankEvacuationGates();
     final index = alternative ? 1 : 0;
@@ -1662,6 +1709,30 @@ class WorldNavigator {
   List<double>? campusDestinationApproach(String key) {
     final destination = campusEvacuationDestination(key);
     if (destination == null) return null;
+
+    if (key.startsWith('faculty:') && destination.kind == 'building') {
+      // Keep the target outside the sealed campus footprint. Try each side
+      // using the same collision/hazard-aware A* as normal campus routes.
+      final clearance = collisionRadius + math.max(8.0, destination.stroke);
+      List<List<double>> best = const [];
+      for (final local in <List<double>>[
+        [destination.width / 2, -clearance],
+        [destination.width / 2, destination.height + clearance],
+        [-clearance, destination.height / 2],
+        [destination.width + clearance, destination.height / 2],
+      ]) {
+        final target = destination.localToWorld(local[0], local[1]);
+        final route = _findCampusRoadRouteWithHazards([
+          markerX,
+          markerY,
+        ], target);
+        if (route.isNotEmpty &&
+            (best.isEmpty || _routeLength(route) < _routeLength(best))) {
+          best = route;
+        }
+      }
+      return best.isEmpty ? null : best.last;
+    }
 
     if (_assemblyAreaKinds.contains(destination.kind)) {
       return destination.localToWorld(

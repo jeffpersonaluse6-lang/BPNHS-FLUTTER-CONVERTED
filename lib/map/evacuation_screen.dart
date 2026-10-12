@@ -717,6 +717,7 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
 
     return message.contains('no valid') ||
         message.contains('no safe route') ||
+        message.contains('no available safe route') ||
         message.contains('no available route') ||
         message.contains('no route') ||
         message.contains('all modeled evacuation exits are blocked') ||
@@ -2344,15 +2345,34 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     );
     final index = alternative ? 1 : 0;
 
-    if (ranked.length <= index) {
+    final exitsUnavailable = navigator.rankEvacuationGates().isEmpty;
+    if (exitsUnavailable) {
+      final fallback = navigator.facultyFallback();
+      if (fallback != null) {
+        _startEvacuationRoute(
+          fallback.kind,
+          role: 'main',
+          precomputedRoute: fallback.previewRoute,
+        );
+        setState(() {
+          routeStatus = routePoints.isEmpty
+              ? 'No available safe route — remain at your current position.'
+              : 'Both evacuation exits are blocked — routing to ${_gateLabel(fallback.kind)} safe area.';
+        });
+        _refreshCurrentStep();
+        return;
+      }
+    }
+
+    if (exitsUnavailable || ranked.length <= index) {
       final allBlocked = navigator.allEvacuationDestinationsBlocked(
         emergencyKind: emergencyKind,
       );
 
       setState(() {
         routePoints = const <List<double>>[];
-        routeStatus = allBlocked
-            ? 'All modeled evacuation exits are blocked — stay at your current position'
+        routeStatus = exitsUnavailable || allBlocked
+            ? 'No available safe route — remain at your current position.'
             : alternative
             ? 'No meaningfully different alternative evacuation route is available'
             : 'No valid campus evacuation route is available';
@@ -2508,11 +2528,15 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
     );
     routePoints = route;
     if (route.isEmpty) {
+      final facultyFallback =
+          _evacuationGateKind?.startsWith('faculty:') == true;
       _routeAcrossBuildingExit = false;
       _campusRouteDestination = null;
       _evacuationGateKind = null;
       _evacuationRouteRole = null;
-      routeStatus = 'No valid building exit route found';
+      routeStatus = facultyFallback
+          ? 'No available safe route — remain at your current position.'
+          : 'No valid building exit route found';
       routeBuildingId = null;
       routeFloor = null;
     } else {
@@ -2677,6 +2701,17 @@ class _EvacuationScreenState extends State<EvacuationScreen> {
       routeFloor = navigator.currentFloor;
       routeStatus =
           'No safe route to Floor $targetFloor — all available stairs or pathways are blocked. Stay at your current position.';
+      if (_evacuationGateKind?.startsWith('faculty:') == true) {
+        routeStatus =
+            'No available safe route — remain at your current position.';
+        _evacuationGateKind = null;
+        _evacuationRouteRole = null;
+        _routeAcrossBuildingExit = false;
+        _campusRouteDestination = null;
+        routeTargetFloor = null;
+        routeBuildingId = null;
+        routeFloor = null;
+      }
       return;
     }
 

@@ -41,6 +41,7 @@ class RouteStepBuilder {
 
     if (lower.contains('no valid') ||
         lower.contains('no safe route') ||
+        lower.contains('no available safe route') ||
         lower.contains('no route') ||
         lower.contains('all modeled evacuation exits are blocked') ||
         lower.contains('stay at your current position')) {
